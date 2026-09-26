@@ -6,7 +6,7 @@
         "type": "switch",
         "field": "wizard_enable_gateway",
         "label": "启用统一网关（推荐）",
-        "initValue": true
+        "initValue": "true"
       },
       {
         "type": "text",
