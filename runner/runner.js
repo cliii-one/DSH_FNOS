@@ -29,7 +29,7 @@ const APP_DIR = process.env.TRIM_APPDEST || path.resolve(__dirname, '..');
 const VAR_DIR = process.env.TRIM_PKGVAR || path.join(APP_DIR, 'data');
 
 // dsh web 只监听本机回环，外部设备无法绕过网关直连
-const DSH_PORT = parseInt(process.env.DSH_PORT || '3081', 10);
+const DSH_PORT = parseInt(process.env.DSH_PORT || '3083', 10);
 const SOCKET_PATH = path.join(APP_DIR, process.env.GATEWAY_SOCKET || 'dsh.sock');
 
 // 回退端口模式（DSH_FALLBACK_PORT=1 时启用）：额外监听 0.0.0.0:PORT 对局域网服务。

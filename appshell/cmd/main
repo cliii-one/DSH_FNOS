@@ -167,6 +167,8 @@ start_process() {
     if [ "${GATEWAY_ENABLED}" = "true" ]; then
         # 网关模式：runner.js 启动 dsh web（仅 127.0.0.1）+ 在 TRIM_APPDEST 创建 dsh.sock
         export GATEWAY_SOCKET="dsh.sock"
+        # 内部端口避开官方 deepseek-harness 的 3081
+        export DSH_PORT="${DSH_PORT:-3083}"
         "${NODE_RUNTIME}" "${TRIM_APPDEST}/bin/runner.js" >> "${LOG_FILE}" 2>&1 &
     else
         # 端口模式：runner.js 额外监听 0.0.0.0:PORT 对局域网服务
