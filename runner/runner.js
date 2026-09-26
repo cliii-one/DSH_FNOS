@@ -32,6 +32,29 @@ const VAR_DIR = process.env.TRIM_PKGVAR || path.join(APP_DIR, 'data');
 const DSH_PORT = parseInt(process.env.DSH_PORT || '3083', 10);
 const SOCKET_PATH = path.join(APP_DIR, process.env.GATEWAY_SOCKET || 'dsh.sock');
 
+// 飞牛统一网关转发时会保留原始路径前缀 /app/{appname}（gatewayPrefix），
+// 而 dsh web 按根路径 / 提供服务，不认识该前缀（返回 404 Not Found）。
+// 转发前把前缀剥离，响应中的绝对路径引用也在响应层改写回来。
+const GATEWAY_PREFIX = process.env.GATEWAY_PREFIX || '/app/dsh';
+
+// /app/dsh/xxx -> /xxx；/app/dsh -> /
+function stripGatewayPrefix(urlPath) {
+    if (urlPath === GATEWAY_PREFIX) return '/';
+    if (urlPath.startsWith(GATEWAY_PREFIX + '/')) return urlPath.slice(GATEWAY_PREFIX.length);
+    return urlPath;
+}
+
+// 响应体里的绝对引用 /xxx 改回 /app/dsh/xxx，让浏览器后续请求仍走网关
+// 仅处理 HTML/JS/CSS 文本，且避免二次改写（//开头是协议相对地址，跳过）
+function restoreGatewayPrefix(text) {
+    if (!text) return text;
+    const P = GATEWAY_PREFIX;
+    return text
+        .replace(/(src|href|action)=(["'])\/(?!\/)/g, `$1=$2${P}/`)
+        .replace(/(url\(\s*)(["']?)\/(?!\/)/g, `$1$2${P}/`)
+        .replace(/(["'])\/(assets|api|ws)\b/g, `$1${P}/$2`);
+}
+
 // 回退端口模式（DSH_FALLBACK_PORT=1 时启用）：额外监听 0.0.0.0:PORT 对局域网服务。
 // 仅在用户显式关闭统一网关时使用，默认走更安全的网关模式。
 const FALLBACK_ENABLED = process.env.DSH_FALLBACK_PORT === '1';
@@ -79,8 +102,9 @@ function startDsh() {
 const POLYFILL = ';if(typeof crypto!=="undefined"&&!crypto.randomUUID){crypto.randomUUID=function(){return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==="x"?r:(Math.random()*0x3|0x8);return v.toString(16);});}};';
 
 function proxyRequest(req, res) {
-    // 自动补 token：dsh 需要 ?token= 才放行；仅当用户没带 token 且已捕获到时
-    let reqPath = req.url;
+    // 1. 剥离网关前缀：/app/dsh/xxx -> /xxx（dsh 按根路径服务）
+    // 2. 自动补 token：dsh 需要 ?token= 才放行；仅当用户没带 token 且已捕获到时
+    let reqPath = stripGatewayPrefix(req.url);
     if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(reqPath)) {
         reqPath += (reqPath.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
     }
@@ -92,23 +116,26 @@ function proxyRequest(req, res) {
         headers: { ...req.headers, host: `127.0.0.1:${DSH_PORT}` },
     }, (upRes) => {
         const ct = upRes.headers['content-type'] || '';
-        const shouldInject = ct.includes('text/html') || ct.includes('javascript');
-        if (!shouldInject) {
+        // HTML/JS/CSS 需要文本处理（polyfill + 前缀回写），其余直接透传
+        const shouldRewrite = ct.includes('text/html') || ct.includes('javascript') || ct.includes('css');
+        if (!shouldRewrite) {
             res.writeHead(upRes.statusCode, upRes.headers);
             upRes.pipe(res);
             return;
         }
-        // HTML/JS 响应：追加 polyfill 后再回给网关
+        // 文本响应：前缀回写 + polyfill 后再回给网关
         const chunks = [];
         upRes.on('data', (c) => chunks.push(c));
         upRes.on('end', () => {
-            const body = Buffer.concat([...chunks.map(Buffer.from), Buffer.from(POLYFILL)]);
+            let body = Buffer.concat(chunks.map(Buffer.from)).toString('utf-8');
+            body = restoreGatewayPrefix(body) + POLYFILL;
+            const out = Buffer.from(body, 'utf-8');
             const headers = { ...upRes.headers };
-            headers['content-length'] = body.length;
+            headers['content-length'] = out.length;
             delete headers['content-encoding'];
             delete headers['transfer-encoding'];
             res.writeHead(upRes.statusCode, headers);
-            res.end(body);
+            res.end(out);
         });
     });
     req.pipe(upstream);
@@ -125,7 +152,7 @@ function startFallbackProxy() {
 
     // WebSocket 升级：直接透传
     server.on('upgrade', (req, socket, head) => {
-        let upUrl = req.url;
+        let upUrl = stripGatewayPrefix(req.url);
         if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(upUrl)) {
             upUrl += (upUrl.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
         }
@@ -160,7 +187,7 @@ function startBridge() {
 
     // WebSocket 升级请求：透传到 dsh web
     server.on('upgrade', (req, socket, head) => {
-        let upUrl = req.url;
+        let upUrl = stripGatewayPrefix(req.url);
         if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(upUrl)) {
             upUrl += (upUrl.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
         }
