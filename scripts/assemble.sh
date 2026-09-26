@@ -3,6 +3,16 @@
 # DSH 组装脚本：把上游构建产物装进 fnOS 应用壳，产出待打包目录
 # 仅供 GitHub Actions 调用（本机 Arm 性能不足，构建全部放在 CI 上）
 #
+# fnOS 应用包结构规范（fnpack 要求）：
+#   包根目录/
+#   ├── manifest           → 应用元数据（安装框架读取）
+#   ├── cmd/               → 生命周期脚本
+#   ├── config/            → privilege + resource
+#   ├── wizard/            → 安装向导
+#   ├── ICON*.PNG          → 图标
+#   └── app/               → ★ 应用运行内容：打包为 app.tgz，
+#       安装后解压到 TRIM_APPDEST（即 /var/apps/<app>/target/）
+#
 # 前置条件（CI 环境已备好）：
 #   - 已 clone 上游仓库并完成构建（产物在 $UPSTREAM_DIR）
 #   - 本脚本所在仓库已 checkout（应用壳在 appshell/）
@@ -18,29 +28,38 @@ STAGE_DIR="${STAGE_DIR:?请设置 STAGE_DIR 为组装输出目录}"
 DSH_VERSION="${DSH_VERSION:-0.0.0-dev}"
 
 APP_PKG="${STAGE_DIR}/DSH"
+# 应用运行内容目录：fnpack 打包为 app.tgz，安装后即 TRIM_APPDEST
+APP_CONTENT="${APP_PKG}/app"
 
 echo "==> [1/4] 清理并创建组装目录"
 rm -rf "${STAGE_DIR}"
-mkdir -p "${APP_PKG}"
+mkdir -p "${APP_PKG}" "${APP_CONTENT}"
 
-echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/ui/图标）"
-cp -r "${REPO_ROOT}/appshell/." "${APP_PKG}/"
+echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/图标）"
+# 注意：ui/ 属于应用运行内容（桌面入口配置），复制到 app/ 下
+cp "${REPO_ROOT}/appshell/manifest" "${APP_PKG}/"
+cp -r "${REPO_ROOT}/appshell/cmd" "${APP_PKG}/"
+cp -r "${REPO_ROOT}/appshell/config" "${APP_PKG}/"
+cp -r "${REPO_ROOT}/appshell/wizard" "${APP_PKG}/"
+cp "${REPO_ROOT}/appshell/ICON.PNG" "${REPO_ROOT}/appshell/ICON_256.PNG" "${APP_PKG}/"
+# ui（桌面入口 config + 图标）是应用内容，放 app/ 下
+cp -r "${REPO_ROOT}/appshell/ui" "${APP_CONTENT}/"
 
 echo "==> [3/4] 准备运行时（使用应用中心 nodejs_v24 依赖，不打包 node 二进制）"
 # 采用 manifest install_dep_apps=nodejs_v24 声明系统依赖：
 # 1. 安装包体积大幅缩小（不带 100+MB 的 node 二进制）
 # 2. Node 版本由应用中心统一管理升级
-mkdir -p "${APP_PKG}/bin"
+mkdir -p "${APP_CONTENT}/bin"
 
 # DSH 本体：上游是 pnpm monorepo，直接整库安装不可行；
-# 先在 CI 上 pack 成 tgz，再在应用目录内以 file: 方式装入
+# 先在 CI 上 pack 成 tgz，再在应用内容目录内以 file: 方式装入
 if [ -z "${DSH_TGZ:-}" ] || [ ! -f "${DSH_TGZ}" ]; then
     echo "FATAL: 未设置 DSH_TGZ 或文件不存在（CI 需先 pnpm pack 上游包）" >&2
     exit 1
 fi
 echo "    从 tgz 安装: ${DSH_TGZ}"
 # 生成 package.json，依赖指向本地 tgz
-cat > "${APP_PKG}/package.json" <<EOF
+cat > "${APP_CONTENT}/package.json" <<EOF
 {
   "name": "dsh-fnos-app",
   "version": "1.0.0",
@@ -54,7 +73,7 @@ EOF
 # 需要构建/下载原生产物，被跳过会触发 ERR_PNPM_IGNORED_BUILDS 退出码 1。
 # 处理：pnpm 11 用 allowBuilds 映射格式白名单（本机 11.7.0 实测通过）。
 echo "==> 写入 pnpm 构建白名单（allowBuilds）"
-cat > "${APP_PKG}/pnpm-workspace.yaml" <<EOF
+cat > "${APP_CONTENT}/pnpm-workspace.yaml" <<EOF
 allowBuilds:
   "@deepseek-ai/dsh-subprocess-local": true
   "@google/genai": true
@@ -67,40 +86,42 @@ EOF
 # COREPACK_ENABLE_STRICT=0 防止上游 packageManager 字段触发 corepack 强制切版本
 echo "==> pnpm 版本: $("${PNPM_BIN:-pnpm}" --version)"
 set +e
-(cd "${APP_PKG}" && COREPACK_ENABLE_STRICT=0 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile --reporter append-only)
+(cd "${APP_CONTENT}" && COREPACK_ENABLE_STRICT=0 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile --reporter append-only)
 INSTALL_EXIT=$?
 set -e
 if [ ${INSTALL_EXIT} -ne 0 ]; then
     echo "FATAL: pnpm install 失败 (exit ${INSTALL_EXIT})" >&2
     echo "---- 当前 pnpm-workspace.yaml ----" >&2
-    cat "${APP_PKG}/pnpm-workspace.yaml" >&2 || true
+    cat "${APP_CONTENT}/pnpm-workspace.yaml" >&2 || true
     exit ${INSTALL_EXIT}
 fi
+# pnpm-workspace.yaml 是构建期配置，运行时不需要，移除以免干扰
+rm -f "${APP_CONTENT}/pnpm-workspace.yaml"
 
 # runner.js：自研运行器
-cp "${REPO_ROOT}/runner/runner.js" "${APP_PKG}/bin/runner.js"
-chmod +x "${APP_PKG}/bin/runner.js"
+cp "${REPO_ROOT}/runner/runner.js" "${APP_CONTENT}/bin/runner.js"
+chmod +x "${APP_CONTENT}/bin/runner.js"
 
 echo "==> [4/4] 校验组装结果"
-if [ ! -d "${APP_PKG}/node_modules/@deepseek-ai/dsh" ]; then
-    echo "FATAL: @deepseek-ai/dsh 未装入 ${APP_PKG}/node_modules" >&2
+if [ ! -d "${APP_CONTENT}/node_modules/@deepseek-ai/dsh" ]; then
+    echo "FATAL: @deepseek-ai/dsh 未装入 ${APP_CONTENT}/node_modules" >&2
     exit 1
 fi
-if [ ! -f "${APP_PKG}/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
+if [ ! -f "${APP_CONTENT}/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
     echo "FATAL: dsh/lib/bin.js 不存在，构建产物不完整" >&2
     exit 1
 fi
 # 原生模块校验：arm64 运行器上原生安装，产物应为 linux-arm64
 # 必须有 linux-arm64 产物；除 node-pty 自带的全平台 prebuilds 外不得有 linux-x64 产物
-if ! find "${APP_PKG}" -name "*.node" -path "*linux-arm64*" | grep -q .; then
+if ! find "${APP_CONTENT}" -name "*.node" -path "*linux-arm64*" | grep -q .; then
     echo "FATAL: 未找到 linux-arm64 原生模块，arm64 NAS 上无法运行" >&2
     exit 1
 fi
-if find "${APP_PKG}" -name "*.node" -path "*linux-x64*" | grep -v "node-pty" | grep -q .; then
+if find "${APP_CONTENT}" -name "*.node" -path "*linux-x64*" | grep -v "node-pty" | grep -q .; then
     echo "FATAL: 包内混入 linux-x64 原生模块，请检查运行器架构" >&2
-    find "${APP_PKG}" -name "*.node" -path "*linux-x64*" | grep -v "node-pty" >&2
+    find "${APP_CONTENT}" -name "*.node" -path "*linux-x64*" | grep -v "node-pty" >&2
     exit 1
 fi
 echo "    原生模块校验通过（linux-arm64 产物齐全）"
 
-echo "==> 组装完成: ${APP_PKG}"
+echo "==> 组装完成: ${APP_PKG}（应用内容在 ${APP_CONTENT}）"
