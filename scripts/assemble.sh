@@ -50,6 +50,19 @@ cat > "${APP_PKG}/package.json" <<EOF
   }
 }
 EOF
+# pnpm v10+ 出于安全默认不执行依赖的安装脚本（postinstall 等），
+# DSH 的部分依赖（node-pty、koffi 等）需要编译/下载原生产物，安装时被跳过
+# 会触发 ERR_PNPM_IGNORED_BUILDS 并以退出码 1 失败。
+# 处理：显式声明允许这些依赖跑脚本，再执行安装。
+echo "==> pnpm approve-builds（允许 DSH 依赖的安装脚本）"
+cat > "${APP_PKG}/pnpm-workspace.yaml" <<EOF
+onlyBuiltDependencies:
+  - "@deepseek-ai/dsh-subprocess-local"
+  - "@google/genai"
+  - "koffi"
+  - "node-pty"
+  - "protobufjs"
+EOF
 (cd "${APP_PKG}" && "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile)
 
 # runner.js：自研运行器
