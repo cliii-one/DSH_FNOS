@@ -64,23 +64,25 @@ jobs:
           echo "version=${DSH_VERSION}" >> "$GITHUB_OUTPUT"
           echo "上游版本: ${DSH_VERSION}"
 
-      - name: 查询是否已发布过该版本
+      - name: 查询是否需要构建
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
           DSH_VERSION: ${{ steps.ver.outputs.version }}
+          EVENT: ${{ github.event_name }}
           FORCE: ${{ inputs.force_release || 'false' }}
         run: |
-          if [ "${FORCE}" = "true" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          # 仅定时任务做"版本未变则跳过"检查；
+          # push / 手动触发永远构建 —— 应用代码可能变了（如打包修复），
+          # 需要重新出包并覆盖更新已有 Release
+          if [ "${EVENT}" = "schedule" ] && [ "${FORCE}" != "true" ]; then
+            if gh release view "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "定时任务：版本 v${DSH_VERSION} 已发布过，跳过构建"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
-          if gh release view "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "版本 v${DSH_VERSION} 已发布过，跳过构建"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: 安装 Node.js 24
         if: steps.check.outputs.skip != 'true'
@@ -204,16 +206,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DSH_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          gh release create "v${DSH_VERSION}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "DSH v${DSH_VERSION}" \
-            --notes "DeepSeek Harness v${DSH_VERSION} 飞牛 fnOS 自动构建版（跨架构）。
+          # Release 说明（幂等：每次构建都重新生成）
+          cat > release-notes.md <<'NOTES'
+          DeepSeek Harness v${DSH_VERSION} 飞牛 fnOS 自动构建版（arm64 原生构建）。
 
           **更新内容见上游**: https://github.com/deepseek-ai/deepseek-harness
 
-          **安装方式**:
-          1. 下载下方 \`DSH_all.fpk\`
-          2. 飞牛应用中心 → 手动安装 → 上传该文件
+          **安装/升级方式**:
+          1. 下载下方 `DSH_all.fpk`
+          2. 飞牛应用中心 → 手动安装 → 上传该文件（已安装则覆盖升级）
           3. 通过飞牛统一网关访问（/app/dsh），需先登录 NAS，无端口冲突
-          4. 依赖：应用中心需已安装 nodejs_v24 运行时" \
-            "DSH_all.fpk"
+          4. 依赖：应用中心需已安装 nodejs_v24 运行时
+          NOTES
+          # tag 已存在则更新资产与说明，否则创建
+          if gh release view "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v${DSH_VERSION} 已存在，更新资产"
+            gh release upload "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" --clobber "DSH_all.fpk"
+            gh release edit "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
+          else
+            gh release create "v${DSH_VERSION}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "DSH v${DSH_VERSION}" \
+              --notes-file release-notes.md \
+              "DSH_all.fpk"
+          fi
