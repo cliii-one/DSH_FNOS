@@ -69,34 +69,51 @@ cat > "${APP_CONTENT}/package.json" <<EOF
   }
 }
 EOF
-# pnpm 11 出于安全默认不执行依赖的安装脚本，DSH 的部分依赖（node-pty、koffi 等）
-# 需要构建/下载原生产物，被跳过会触发 ERR_PNPM_IGNORED_BUILDS 退出码 1。
-# 处理：pnpm 11 用 allowBuilds 映射格式白名单（本机 11.7.0 实测通过）。
-echo "==> 写入 pnpm 构建白名单（allowBuilds）"
-cat > "${APP_CONTENT}/pnpm-workspace.yaml" <<EOF
-allowBuilds:
-  "@deepseek-ai/dsh-subprocess-local": true
-  "@google/genai": true
-  "koffi": true
-  "node-pty": true
-  "protobufjs": true
-# 上游发版当天构建时，全新解析会撞 pnpm 11 默认的 24h 最小包龄策略
-minimumReleaseAge: 0
-EOF
-# COREPACK_ENABLE_STRICT=0 防止上游 packageManager 字段触发 corepack 强制切版本
-echo "==> pnpm 版本: $("${PNPM_BIN:-pnpm}" --version)"
+# 用 npm 而非 pnpm 安装应用依赖：
+# npm 产物是扁平自包含的 node_modules（无符号链接），tar 打包/解压后开箱即用；
+# pnpm 的软链结构在 tar 往返后会断裂。npm 默认执行依赖安装脚本，
+# 原生模块（koffi/node-pty 等）在 arm64 runner 上原生编译/匹配，无需白名单。
+echo "==> npm 版本: $(npm --version)"
 set +e
-(cd "${APP_CONTENT}" && COREPACK_ENABLE_STRICT=0 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile --reporter append-only)
+(cd "${APP_CONTENT}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
 INSTALL_EXIT=$?
 set -e
 if [ ${INSTALL_EXIT} -ne 0 ]; then
-    echo "FATAL: pnpm install 失败 (exit ${INSTALL_EXIT})" >&2
-    echo "---- 当前 pnpm-workspace.yaml ----" >&2
-    cat "${APP_CONTENT}/pnpm-workspace.yaml" >&2 || true
+    echo "FATAL: npm install 失败 (exit ${INSTALL_EXIT})" >&2
     exit ${INSTALL_EXIT}
 fi
-# pnpm-workspace.yaml 是构建期配置，运行时不需要，移除以免干扰
-rm -f "${APP_CONTENT}/pnpm-workspace.yaml"
+
+# 扁平化 node_modules：pnpm 依赖符号链接（node_modules/x -> .pnpm/...），
+# tar 打包与解压对软链的处理不可控，链接极易断裂。这里把所有软链替换为实体拷贝
+echo "==> 扁平化 node_modules（消除符号链接）"
+(
+    cd "${APP_CONTENT}"
+    # 多轮处理：软链可能嵌套（@scope/pkg 两层 + .pnpm 内部）
+    for round in 1 2 3; do
+        LINKS=$(find node_modules -type l 2>/dev/null)
+        [ -z "${LINKS}" ] && break
+        while IFS= read -r link; do
+            [ -z "${link}" ] && continue
+            target=$(readlink -f "${link}" 2>/dev/null) || continue
+            if [ -n "${target}" ] && [ -e "${target}" ]; then
+                rm "${link}"
+                cp -a "${target}" "${link}"
+            else
+                # 死链直接删除
+                rm "${link}"
+            fi
+        done <<EOF2
+${LINKS}
+EOF2
+    done
+)
+REMAIN_LINKS=$(find "${APP_CONTENT}/node_modules" -type l 2>/dev/null | wc -l)
+echo "    剩余软链: ${REMAIN_LINKS} 个"
+if [ "${REMAIN_LINKS}" -gt 0 ]; then
+    echo "FATAL: node_modules 仍有未处理的软链" >&2
+    find "${APP_CONTENT}/node_modules" -type l >&2
+    exit 1
+fi
 
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_CONTENT}/bin/runner.js"
