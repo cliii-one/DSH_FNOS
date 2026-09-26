@@ -26,8 +26,7 @@ DSH/
 ├── runner/
 │   └── runner.js        # 自研运行器：启动 dsh web + 局域网反向代理
 ├── scripts/
-│   ├── build-local.sh   # 本机一键：构建上游 + 组装 + 打包
-│   └── assemble.sh      # CI 用：组装 DSH 本体进应用壳（供 Actions 调用）
+│   └── assemble.sh      # 组装 DSH 本体进应用壳（供 Actions 调用）
 ├── .github/workflows/
 │   └── build.yml        # 自动构建 + 发 Release
 ├── docs/BUILD.md        # 构建与发布说明
@@ -36,7 +35,12 @@ DSH/
 
 ## 快速开始
 
-### NAS 上一键安装（推荐）
+### 构建全部交给 GitHub（NAS 零负担）
+
+推送到 GitHub 后，Actions 每次手动触发或上游发版时自动构建并发布 Release。
+本机 Arm 性能不足完全不影响——构建、打包全在 GitHub 服务器上完成。
+
+### NAS 上一键安装
 
 在 **已发布 Release** 后，NAS 的 SSH 终端执行：
 
@@ -45,23 +49,10 @@ DSH/
 wget -O /tmp/DSH.fpk https://github.com/<你的用户名>/DSH/releases/latest/download/DSH_arm64.fpk
 
 # 2. 安装（或直接在飞牛应用中心手动上传安装）
-appcenter-cli install-fpk /tmp/DSH.fpk --env /tmp/dsh.env
+appcenter-cli install-fpk /tmp/DSH.fpk
 ```
 
 安装时向导会要求填服务端口（默认 3082），装完桌面出现 DSH 卡片，点开即用。
-
-### 本机开发构建
-
-```bash
-# 在 fnOS 或任意 arm64/x86_64 Linux 上
-cd DSH
-./scripts/build-local.sh          # 全流程：拉源码→构建→组装→fnpack
-# 产物在 dist/DSH_arm64.fpk
-```
-
-### CI 自动构建
-
-推送到 GitHub 后，Actions 每次手动触发或上游发版时自动构建并发布 Release。
 
 ## 端口约定
 

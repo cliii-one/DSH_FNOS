@@ -1,12 +1,14 @@
 # =============================================================
 # DSH for fnOS - GitHub Actions 自动构建
 #
+# 全程在 GitHub x64 服务器上构建，NAS 本机零负担
+#
 # 触发方式：
 #   1. 手动 workflow_dispatch（可指定上游 ref，默认 master）
 #   2. 每日定时检查上游是否发新版，有新版本才构建发布
 #
-# 流程：拉上游源码 -> pnpm 构建 -> pack tgz -> 组装应用壳 -> fnpack 打包
-#      -> 上传 artifact + 发 GitHub Release
+# 流程：拉上游源码 -> pnpm 构建 -> pack tgz -> 组装应用壳（含 arm64 node）
+#      -> fnpack 打包 -> 上传 artifact + 发 GitHub Release
 # =============================================================
 name: build
 
@@ -94,17 +96,16 @@ jobs:
         run: |
           mkdir -p ../tgz
           pnpm --filter @deepseek-ai/dsh pack --pack-destination ../tgz
-          echo "DSH_TGZ=$(ls ../tgz/*.tgz | head -1)" >> "$GITHUB_ENV"
+          echo "DSH_TGZ=${GITHUB_WORKSPACE}/tgz/$(ls ../tgz | head -1)" >> "$GITHUB_ENV"
 
-      - name: 组装 fnOS 应用目录
+      - name: 组装 fnOS 应用目录（含下载 arm64 node）
         if: steps.check.outputs.skip != 'true'
         env:
           DSH_VERSION: ${{ steps.ver.outputs.version }}
+          DSH_TGZ: ${{ env.DSH_TGZ }}
         run: |
-          # 下载 fnpack（飞牛官方打包工具，Linux x64 版）
+          # 下载 fnpack（飞牛官方打包工具，CI x64 上运行）
           curl -sL -o /tmp/fnpack.zip https://download.fnnas.com/fnpack/fnpack-linux-x64.zip || true
-          # 若官方地址不可用，从项目内置 fallback 目录取；CI 上以实际发布地址为准
-          # 这里先装到 /usr/local/bin
           if [ -f /tmp/fnpack.zip ]; then
             unzip -o /tmp/fnpack.zip -d /tmp/fnpack
             chmod +x /tmp/fnpack/fnpack
@@ -117,18 +118,15 @@ jobs:
           PNPM_BIN="$(command -v pnpm)" \
             bash scripts/assemble.sh
 
-      - name: 在应用目录内安装 tgz 依赖
+      - name: 校验 node 二进制架构（必须 arm64）
         if: steps.check.outputs.skip != 'true'
-        working-directory: stage/DSH
         run: |
-          node -e '
-            const fs = require("fs");
-            const tgz = process.argv[1];
-            const pkg = JSON.parse(fs.readFileSync("package.json", "utf-8"));
-            pkg.dependencies = { "@deepseek-ai/dsh": "file:" + tgz };
-            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-          ' "$DSH_TGZ"
-          pnpm install --prod --no-frozen-lockfile
+          # fnpack 产物最终运行在 arm64 NAS 上，提前在这里确认没拷错架构
+          file stage/DSH/bin/node | grep -q "ARM aarch64" || {
+            echo "::error::bin/node 不是 arm64 架构！"
+            exit 1
+          }
+          echo "✓ bin/node 是 arm64"
 
       - name: fnpack 打包
         if: steps.check.outputs.skip != 'true'
@@ -141,8 +139,6 @@ jobs:
           fnpack build
           FPK=$(ls *.fpk | head -1)
           mv "${FPK}" "${GITHUB_WORKSPACE}/DSH_arm64.fpk"
-          # fnpack 产物实际为 arm64 平台包（manifest platform=arm）
-          # 若在 x64 CI 上构建 all/arm 包，产物名保持不变
 
       - name: 上传构建产物 artifact
         if: steps.check.outputs.skip != 'true'
@@ -162,7 +158,7 @@ jobs:
             --title "DSH v${DSH_VERSION}" \
             --notes "DeepSeek Harness v${DSH_VERSION} 飞牛 fnOS 自动构建版（arm64）。
 
-          **更新内容见上游**: https://github.com/deepseek-ai/deepseek-harness/releases
+          **更新内容见上游**: https://github.com/deepseek-ai/deepseek-harness
 
           **安装方式**:
           1. 下载下方 \`DSH_arm64.fpk\`

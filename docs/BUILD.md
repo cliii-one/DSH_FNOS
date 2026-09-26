@@ -1,28 +1,10 @@
 # 构建与发布指南
 
+> 本项目所有构建都在 GitHub Actions 上完成，NAS 本机只负责安装，不占用任何 CPU/内存。
+
 ## 前置条件
 
-| 工具 | 版本 | 用途 |
-|------|------|------|
-| Node.js | ≥ 22.19 或 ≥ 24 | 构建上游 + 运行 DSH |
-| pnpm | 11.x | 上游 monorepo 依赖管理 |
-| git | 任意 | 拉取上游源码 |
-| fnpack | 最新 | fnOS `.fpk` 打包（[下载](https://developer.fnnas.com)） |
-
-## 本地构建（在 fnOS 上）
-
-```bash
-cd /vol2/1000/05-DeepSeek/DSH
-./scripts/build-local.sh
-```
-
-全流程：克隆/更新上游 master → `pnpm install && pnpm run build` → `pnpm pack` 出 tgz → 组装应用壳 → `fnpack build` 出 `dist/DSH_arm64.fpk`。
-
-只想要最新 npm 发布版（不自己构建源码）：
-
-```bash
-./scripts/build-local.sh --use-npm-latest
-```
+NAS 端什么都不用装，只需要一个 GitHub 仓库。
 
 ## GitHub Actions 自动构建
 
@@ -31,9 +13,11 @@ cd /vol2/1000/05-DeepSeek/DSH
 1. **手动触发**：Actions → build → Run workflow（可指定上游 ref、强制发布）
 2. **自动触发**：每天 UTC 20:00 检查上游版本，有新版本才构建发布 Release
 
+CI 流程：拉上游 master → `pnpm install && pnpm run build` → `pnpm pack` 出 tgz → 组装应用壳（含下载 arm64 版 Node）→ `file` 命令校验架构 → `fnpack build` → 发 Release。
+
 ### CI 上的 fnpack
 
-工作流从 `https://download.fnnas.com/fnpack/fnpack-linux-x64.zip` 下载 fnpack。
+工作流从 `https://download.fnnas.com/fnpack/fnpack-linux-x64.zip` 下载 fnpack（在 CI 的 x64 环境运行，与 NAS 架构无关）。
 若官方地址变化，修改 `.github/workflows/build.yml` 中 `curl -sL -o /tmp/fnpack.zip` 那一行的 URL。
 
 ## NAS 端安装
