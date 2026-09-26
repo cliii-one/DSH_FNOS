@@ -98,20 +98,23 @@ jobs:
           pnpm --filter @deepseek-ai/dsh pack --pack-destination ../tgz
           echo "DSH_TGZ=${GITHUB_WORKSPACE}/tgz/$(ls ../tgz | head -1)" >> "$GITHUB_ENV"
 
+      - name: 安装 fnpack（飞牛官方打包工具）
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          # 官方静态分发地址（直接是二进制，非 zip）
+          # CI 是 amd64，用 fnpack-1.2.3-linux-amd64；NAS 本机打包装 arm64 版
+          FNPACK_URL="https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64"
+          curl -sfL --retry 3 -o /tmp/fnpack "${FNPACK_URL}"
+          chmod +x /tmp/fnpack
+          sudo mv /tmp/fnpack /usr/local/bin/fnpack
+          fnpack --version || true
+
       - name: 组装 fnOS 应用目录
         if: steps.check.outputs.skip != 'true'
         env:
           DSH_VERSION: ${{ steps.ver.outputs.version }}
           DSH_TGZ: ${{ env.DSH_TGZ }}
         run: |
-          # 下载 fnpack（飞牛官方打包工具，CI x64 上运行）
-          curl -sL -o /tmp/fnpack.zip https://download.fnnas.com/fnpack/fnpack-linux-x64.zip || true
-          if [ -f /tmp/fnpack.zip ]; then
-            unzip -o /tmp/fnpack.zip -d /tmp/fnpack
-            chmod +x /tmp/fnpack/fnpack
-            sudo mv /tmp/fnpack/fnpack /usr/local/bin/fnpack
-            fnpack --version || true
-          fi
           STAGE_DIR="${GITHUB_WORKSPACE}/stage" \
           UPSTREAM_DIR="${GITHUB_WORKSPACE}/upstream" \
           DSH_TGZ="${DSH_TGZ}" \

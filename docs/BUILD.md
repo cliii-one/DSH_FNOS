@@ -19,8 +19,14 @@ CI 流程：拉上游 master → `pnpm install && pnpm run build` → `pnpm pack
 
 ### CI 上的 fnpack
 
-工作流从 `https://download.fnnas.com/fnpack/fnpack-linux-x64.zip` 下载 fnpack（在 CI 的 x64 环境运行，与 NAS 架构无关）。
-若官方地址变化，修改 `.github/workflows/build.yml` 中 `curl -sL -o /tmp/fnpack.zip` 那一行的 URL。
+工作流从飞牛官方静态地址下载（直接二进制，无需解压）：
+
+```
+https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64   # CI（amd64）使用
+https://static2.fnnas.com/fnpack/fnpack-1.2.2-linux-arm64   # NAS 本机打包装这个（arm64）
+```
+
+若官方出新版，只需改 `.github/workflows/build.yml` 中 `FNPACK_URL` 一行。
 
 ## NAS 端安装
 
