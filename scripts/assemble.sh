@@ -63,7 +63,8 @@ onlyBuiltDependencies:
   - "node-pty"
   - "protobufjs"
 EOF
-(cd "${APP_PKG}" && npm_config_arch=arm64 npm_config_target_arch=arm64 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile)
+# COREPACK_ENABLE_STRICT=0 防止上游 packageManager 字段触发 corepack 强制切版本
+(cd "${APP_PKG}" && COREPACK_ENABLE_STRICT=0 npm_config_arch=arm64 npm_config_target_arch=arm64 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile)
 
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_PKG}/bin/runner.js"
