@@ -89,9 +89,9 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         uses: pnpm/action-setup@v4
         with:
-          # 用 pnpm 10：其 onlyBuiltDependencies 白名单行为已在本地实测验证；
-          # pnpm 11 对安装脚本审批更严格，白名单写法有差异
-          version: 10
+          # 用 pnpm 11：与上游 packageManager 声明一致；
+          # 构建脚本白名单用 allowBuilds 映射格式（assemble.sh 中，已实测）
+          version: 11
 
       - name: 安装上游依赖并构建
         if: steps.check.outputs.skip != 'true'
@@ -162,9 +162,10 @@ jobs:
             echo "::error::未找到 linux-arm64 原生模块，arm64 NAS 无法运行"
             exit 1
           fi
-          if find stage/DSH -name "*.node" -path "*linux-x64*" | grep -q .; then
+          # node-pty 包结构自带全平台 prebuilds，放行
+          if find stage/DSH -name "*.node" -path "*linux-x64*" | grep -v "node-pty" | grep -q .; then
             echo "::error::包内混入 linux-x64 原生模块（npm_config_arch 未生效？）"
-            find stage/DSH -name "*.node" -path "*linux-x64*"
+            find stage/DSH -name "*.node" -path "*linux-x64*" | grep -v node-pty
             exit 1
           fi
           echo "✓ 包体校验通过（linux-arm64 产物齐全）"

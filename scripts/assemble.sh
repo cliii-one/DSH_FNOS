@@ -50,18 +50,19 @@ cat > "${APP_PKG}/package.json" <<EOF
   }
 }
 EOF
-# pnpm v10+ 出于安全默认不执行依赖的安装脚本（postinstall 等），
-# DSH 的部分依赖（node-pty、koffi 等）需要编译/下载原生产物，安装时被跳过
-# 会触发 ERR_PNPM_IGNORED_BUILDS 并以退出码 1 失败。
-# 处理：显式声明允许这些依赖跑脚本，再执行安装。
-echo "==> pnpm approve-builds（允许 DSH 依赖的安装脚本）"
+# pnpm 11 出于安全默认不执行依赖的安装脚本，DSH 的部分依赖（node-pty、koffi 等）
+# 需要构建/下载原生产物，被跳过会触发 ERR_PNPM_IGNORED_BUILDS 退出码 1。
+# 处理：pnpm 11 用 allowBuilds 映射格式白名单（本机 11.7.0 实测通过）。
+echo "==> 写入 pnpm 构建白名单（allowBuilds）"
 cat > "${APP_PKG}/pnpm-workspace.yaml" <<EOF
-onlyBuiltDependencies:
-  - "@deepseek-ai/dsh-subprocess-local"
-  - "@google/genai"
-  - "koffi"
-  - "node-pty"
-  - "protobufjs"
+allowBuilds:
+  "@deepseek-ai/dsh-subprocess-local": true
+  "@google/genai": true
+  "koffi": true
+  "node-pty": true
+  "protobufjs": true
+# 上游发版当天构建时，全新解析会撞 pnpm 11 默认的 24h 最小包龄策略
+minimumReleaseAge: 0
 EOF
 # COREPACK_ENABLE_STRICT=0 防止上游 packageManager 字段触发 corepack 强制切版本
 echo "==> pnpm 版本: $("${PNPM_BIN:-pnpm}" --version)"
@@ -95,9 +96,10 @@ if ! find "${APP_PKG}" -name "*.node" -path "*linux-arm64*" | grep -q .; then
     echo "FATAL: 未找到 linux-arm64 原生模块，arm64 NAS 上无法运行" >&2
     exit 1
 fi
-if find "${APP_PKG}" -name "*.node" -path "*linux-x64*" | grep -q .; then
+if find "${APP_PKG}" -name "*.node" -path "*linux-x64*" | grep -v "node-pty" | grep -q .; then
+    # node-pty 包结构自带全平台 prebuilds 目录，属正常情况，放行
     echo "FATAL: 包内混入 linux-x64 原生模块，请检查 npm_config_arch 是否生效" >&2
-    find "${APP_PKG}" -name "*.node" -path "*linux-x64*" >&2
+    find "${APP_PKG}" -name "*.node" -path "*linux-x64*" | grep -v "node-pty" >&2
     exit 1
 fi
 echo "    原生模块校验通过（linux-arm64 产物齐全）"
