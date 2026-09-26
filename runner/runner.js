@@ -101,48 +101,159 @@ function startDsh() {
 // 注入 polyfill：修复部分浏览器在特定上下文缺少 crypto.randomUUID 的问题
 const POLYFILL = ';if(typeof crypto!=="undefined"&&!crypto.randomUUID){crypto.randomUUID=function(){return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==="x"?r:(Math.random()*0x3|0x8);return v.toString(16);});}};';
 
-function proxyRequest(req, res) {
-    // 1. 剥离网关前缀：/app/dsh/xxx -> /xxx（dsh 按根路径服务）
-    // 2. 自动补 token：dsh 需要 ?token= 才放行；仅当用户没带 token 且已捕获到时
-    let reqPath = stripGatewayPrefix(req.url);
-    if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(reqPath)) {
-        reqPath += (reqPath.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
+// ---------- 认证代理 ----------
+//
+// 实测结论：dsh 的认证是「token 换 cookie」模式 —— 带 token 的请求永远返回
+// 303 + Set-Cookie，浏览器跟随重定向后凭 cookie 访问。但 dsh 对 Unix socket
+// 进来的请求不认可 cookie（同 cookie 经 TCP 200、经 socket 303，实测）。
+// 若每次转发都注入 token，浏览器会陷入 303 循环（这正是"Not Found"的根源之一）。
+//
+// 解法：认证完全由桥接器代理 ——
+//   1. 桥接器持有内存 cookie，首次（或失效时）用 token 换取
+//   2. 转发请求时附带 cookie；若 dsh 仍返回 303，则在服务器端跟随重定向
+//      （最多 5 跳），把最终内容直接返回浏览器
+//   3. 浏览器全程不需要 token/cookie，只看到 200
+
+const COOKIE_JAR = { value: null }; // dsh-auth-* cookie 值
+
+function dshRequest(reqPath, extraHeaders = {}) {
+    return new Promise((resolve, reject) => {
+        const headers = {
+            host: `127.0.0.1:${DSH_PORT}`,
+            accept: '*/*',
+            ...extraHeaders,
+        };
+        if (COOKIE_JAR.value) headers.cookie = COOKIE_JAR.value;
+        const up = http.request({
+            hostname: '127.0.0.1',
+            port: DSH_PORT,
+            path: reqPath,
+            headers,
+        }, resolve);
+        up.on('error', reject);
+        up.end();
+    });
+}
+
+// 用 token 换取 cookie（服务器端完成，浏览器无感知）。
+// 注意：带 token 的请求 dsh 永远响应 303+新 cookie，因此 token 只在此处用一次，
+// 日常转发绝不能携带，否则陷入 303 循环。
+async function ensureCookie(force = false) {
+    if (COOKIE_JAR.value && !force) return;
+    const token = process.env.DSH_AUTH_TOKEN;
+    if (!token) return;
+    const res = await new Promise((resolve, reject) => {
+        const up = http.request({
+            hostname: '127.0.0.1',
+            port: DSH_PORT,
+            path: '/?token=' + token,
+            headers: { host: `127.0.0.1:${DSH_PORT}`, accept: '*/*' },
+        }, resolve);
+        up.on('error', reject);
+        up.end();
+    });
+    const setCookie = res.headers['set-cookie'];
+    if (setCookie && setCookie.length) {
+        COOKIE_JAR.value = setCookie.map((c) => c.split(';')[0]).join('; ');
+        console.log('[Bridge] 已通过 token 换取会话 cookie');
     }
-    const upstream = http.request({
-        hostname: '127.0.0.1',
-        port: DSH_PORT,
-        path: reqPath,
-        method: req.method,
-        headers: { ...req.headers, host: `127.0.0.1:${DSH_PORT}` },
-    }, (upRes) => {
-        const ct = upRes.headers['content-type'] || '';
-        // HTML/JS/CSS 需要文本处理（polyfill + 前缀回写），其余直接透传
-        const shouldRewrite = ct.includes('text/html') || ct.includes('javascript') || ct.includes('css');
-        if (!shouldRewrite) {
-            res.writeHead(upRes.statusCode, upRes.headers);
-            upRes.pipe(res);
-            return;
+}
+
+// 服务器端跟随 303 重定向，返回最终非 3xx 响应。
+// 若 cookie 失效（dsh 继续发 303），强制用 token 重换 cookie 后重试。
+async function followAndResolve(reqPath, maxHops = 5) {
+    let path = reqPath;
+    let refreshed = false;
+    for (let i = 0; i < maxHops; i++) {
+        const res = await dshRequest(path);
+        const isRedirect = [301, 302, 303, 307].includes(res.statusCode) && res.headers.location;
+        if (!isRedirect) return res;
+
+        // 记录 dsh 重新签发的 cookie
+        const sc = res.headers['set-cookie'];
+        if (sc && sc.length) COOKIE_JAR.value = sc.map((c) => c.split(';')[0]).join('; ');
+
+        // 首次 303 说明签发时 cookie 未生效：强制用 token 重换一次
+        if (!refreshed) {
+            refreshed = true;
+            await ensureCookie(true);
+            continue; // 用新 cookie 重放当前 path（不带 token）
         }
-        // 文本响应：前缀回写 + polyfill 后再回给网关
-        const chunks = [];
-        upRes.on('data', (c) => chunks.push(c));
-        upRes.on('end', () => {
-            let body = Buffer.concat(chunks.map(Buffer.from)).toString('utf-8');
-            body = restoreGatewayPrefix(body) + POLYFILL;
-            const out = Buffer.from(body, 'utf-8');
-            const headers = { ...upRes.headers };
-            headers['content-length'] = out.length;
-            delete headers['content-encoding'];
-            delete headers['transfer-encoding'];
-            res.writeHead(upRes.statusCode, headers);
-            res.end(out);
-        });
-    });
-    req.pipe(upstream);
-    upstream.on('error', () => {
-        res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('DSH 尚未就绪，请稍后刷新重试\n');
-    });
+
+        const loc = res.headers.location;
+        if (loc.startsWith('/')) path = loc;
+        else if (loc.startsWith('.')) {
+            const base = path.split('?')[0].replace(/\/[^/]*$/, '');
+            path = base + '/' + loc.replace(/^\.\//, '');
+        } else {
+            path = loc;
+        }
+    }
+    throw new Error('重定向次数超限');
+}
+
+function proxyRequest(req, res) {
+    (async () => {
+        try {
+            // 剥离网关前缀：/app/dsh/xxx -> /xxx（dsh 按根路径服务）
+            const reqPath = stripGatewayPrefix(req.url);
+            await ensureCookie();
+
+            // GET/HEAD 走"跟随重定向"通道；其他方法（POST 等）直接转发
+            // 认证统一由桥接器的 cookie 完成，所有请求均不携带 token
+            let upRes;
+            if (req.method === 'GET' || req.method === 'HEAD') {
+                upRes = await followAndResolve(reqPath);
+            } else {
+                upRes = await new Promise((resolve, reject) => {
+                    const headers = {
+                        ...req.headers,
+                        host: `127.0.0.1:${DSH_PORT}`,
+                    };
+                    if (COOKIE_JAR.value) headers.cookie = COOKIE_JAR.value;
+                    const up = http.request({
+                        hostname: '127.0.0.1',
+                        port: DSH_PORT,
+                        path: reqPath,
+                        method: req.method,
+                        headers,
+                    }, resolve);
+                    up.on('error', reject);
+                    req.pipe(up);
+                });
+                const sc = upRes.headers['set-cookie'];
+                if (sc && sc.length) COOKIE_JAR.value = sc.map((c) => c.split(';')[0]).join('; ');
+            }
+
+            const ct = upRes.headers['content-type'] || '';
+            const shouldRewrite = ct.includes('text/html') || ct.includes('javascript') || ct.includes('css');
+            const outHeaders = { ...upRes.headers };
+            // 浏览器不需要 dsh 的 cookie/认证相关头（认证由桥接器代理）
+            delete outHeaders['set-cookie'];
+
+            if (!shouldRewrite) {
+                res.writeHead(upRes.statusCode, outHeaders);
+                upRes.pipe(res);
+                return;
+            }
+            const chunks = [];
+            upRes.on('data', (c) => chunks.push(c));
+            upRes.on('end', () => {
+                let body = Buffer.concat(chunks.map(Buffer.from)).toString('utf-8');
+                body = restoreGatewayPrefix(body) + POLYFILL;
+                const out = Buffer.from(body, 'utf-8');
+                outHeaders['content-length'] = out.length;
+                delete outHeaders['content-encoding'];
+                delete outHeaders['transfer-encoding'];
+                res.writeHead(upRes.statusCode, outHeaders);
+                res.end(out);
+            });
+        } catch (err) {
+            console.error('[Bridge] 转发失败:', err.message);
+            res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('DSH 尚未就绪，请稍后刷新重试\n');
+        }
+    })();
 }
 
 // ---------- 回退端口模式：局域网 TCP 监听（仅网关关闭时启用） ----------
@@ -152,15 +263,20 @@ function startFallbackProxy() {
 
     // WebSocket 升级：直接透传
     server.on('upgrade', (req, socket, head) => {
-        let upUrl = stripGatewayPrefix(req.url);
-        if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(upUrl)) {
-            upUrl += (upUrl.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
-        }
+        const upUrl = stripGatewayPrefix(req.url);
         const upstream = net.connect(DSH_PORT, '127.0.0.1', () => {
+            // 复制浏览器原始头，但 Cookie 由桥接器接管（认证代理）
             const lines = [`${req.method} ${upUrl} HTTP/1.1`];
+            let hasCookie = false;
             for (let i = 0; i < req.rawHeaders.length; i += 2) {
-                lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+                const name = req.rawHeaders[i];
+                const lname = name.toLowerCase();
+                if (lname === 'cookie') { hasCookie = true; continue; } // 稍后统一注入
+                if (lname === 'host') continue; // host 由 CONNECT 目标决定
+                lines.push(`${name}: ${req.rawHeaders[i + 1]}`);
             }
+            if (COOKIE_JAR.value) lines.push(`Cookie: ${COOKIE_JAR.value}`);
+            if (!hasCookie && COOKIE_JAR.value) { /* 已注入 */ }
             upstream.write(lines.join('\r\n') + '\r\n\r\n');
             if (head && head.length) upstream.write(head);
             upstream.pipe(socket);
@@ -187,16 +303,17 @@ function startBridge() {
 
     // WebSocket 升级请求：透传到 dsh web
     server.on('upgrade', (req, socket, head) => {
-        let upUrl = stripGatewayPrefix(req.url);
-        if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(upUrl)) {
-            upUrl += (upUrl.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
-        }
+        const upUrl = stripGatewayPrefix(req.url);
+        // Cookie 由桥接器接管：丢弃浏览器 cookie，注入桥接器持有的会话 cookie
+        const upHeaders = { ...req.headers, host: `127.0.0.1:${DSH_PORT}` };
+        delete upHeaders.cookie;
+        if (COOKIE_JAR.value) upHeaders.cookie = COOKIE_JAR.value;
         const upstream = http.request({
             hostname: '127.0.0.1',
             port: DSH_PORT,
             path: upUrl,
             method: req.method,
-            headers: { ...req.headers, host: `127.0.0.1:${DSH_PORT}` },
+            headers: upHeaders,
         });
         upstream.on('upgrade', (upRes, upSocket, upHead) => {
             const lines = [`HTTP/1.1 101 Switching Protocols`];
