@@ -100,15 +100,21 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         working-directory: upstream
         run: |
+          echo "=== [A] pnpm install 上游开始 ==="
           pnpm install
-          pnpm run build
+          echo "=== [A] pnpm install 上游完成 ==="
+          echo "=== [B] pnpm run build 开始（内存最大 6GB）==="
+          NODE_OPTIONS="--max-old-space-size=6144" pnpm run build
+          echo "=== [B] pnpm run build 完成 ==="
 
       - name: pack 上游 dsh 包为 tgz
         if: steps.check.outputs.skip != 'true'
         working-directory: upstream
         run: |
+          echo "=== [C] pack tgz 开始 ==="
           mkdir -p ../tgz
           pnpm --filter @deepseek-ai/dsh pack --pack-destination ../tgz
+          echo "=== [C] pack tgz 完成: $(ls -la ../tgz) ==="
           echo "DSH_TGZ=${GITHUB_WORKSPACE}/tgz/$(ls ../tgz | head -1)" >> "$GITHUB_ENV"
 
       - name: 安装 fnpack（飞牛官方打包工具）
