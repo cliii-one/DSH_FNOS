@@ -125,11 +125,20 @@ jobs:
           DSH_VERSION: ${{ steps.ver.outputs.version }}
           DSH_TGZ: ${{ env.DSH_TGZ }}
         run: |
+          set -x
+          pnpm --version
           STAGE_DIR="${GITHUB_WORKSPACE}/stage" \
           UPSTREAM_DIR="${GITHUB_WORKSPACE}/upstream" \
           DSH_TGZ="${DSH_TGZ}" \
           PNPM_BIN="$(command -v pnpm)" \
-            bash scripts/assemble.sh
+            bash scripts/assemble.sh || {
+              echo "::group::诊断信息"
+              echo "pnpm 版本: $(pnpm --version)"
+              ls -la stage/DSH/ 2>/dev/null
+              cat stage/DSH/pnpm-workspace.yaml 2>/dev/null
+              echo "::endgroup::"
+              exit 1
+            }
 
       - name: 校验包体（arm64 原生产物齐全）
         if: steps.check.outputs.skip != 'true'

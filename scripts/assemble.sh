@@ -64,7 +64,17 @@ onlyBuiltDependencies:
   - "protobufjs"
 EOF
 # COREPACK_ENABLE_STRICT=0 防止上游 packageManager 字段触发 corepack 强制切版本
-(cd "${APP_PKG}" && COREPACK_ENABLE_STRICT=0 npm_config_arch=arm64 npm_config_target_arch=arm64 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile)
+echo "==> pnpm 版本: $("${PNPM_BIN:-pnpm}" --version)"
+set +e
+(cd "${APP_PKG}" && COREPACK_ENABLE_STRICT=0 npm_config_arch=arm64 npm_config_target_arch=arm64 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile --reporter append-only)
+INSTALL_EXIT=$?
+set -e
+if [ ${INSTALL_EXIT} -ne 0 ]; then
+    echo "FATAL: pnpm install 失败 (exit ${INSTALL_EXIT})" >&2
+    echo "---- 当前 pnpm-workspace.yaml ----" >&2
+    cat "${APP_PKG}/pnpm-workspace.yaml" >&2 || true
+    exit ${INSTALL_EXIT}
+fi
 
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_PKG}/bin/runner.js"
