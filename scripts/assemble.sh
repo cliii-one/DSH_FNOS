@@ -26,18 +26,11 @@ mkdir -p "${APP_PKG}"
 echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/ui/图标）"
 cp -r "${REPO_ROOT}/appshell/." "${APP_PKG}/"
 
-echo "==> [3/4] 复制上游 DSH 构建产物"
-# node 二进制：CI 跑在 x64 上，但 NAS 是 arm64，
-# 所以这里必须下载官方 arm64 版 Node，直接拷 CI 的 node 会无法运行
+echo "==> [3/4] 准备运行时（使用应用中心 nodejs_v24 依赖，不打包 node 二进制）"
+# 采用 manifest install_dep_apps=nodejs_v24 声明系统依赖：
+# 1. 安装包体积大幅缩小（不带 100+MB 的 node 二进制）
+# 2. Node 版本由应用中心统一管理升级
 mkdir -p "${APP_PKG}/bin"
-NODE_VERSION="$(node -p 'process.versions.node.split(".").slice(0,2).join(".")')"
-NODE_ARCH="arm64"
-echo "    下载 Node v${NODE_VERSION} (${NODE_ARCH})..."
-curl -sL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
-tar -xJf /tmp/node.tar.xz -C /tmp
-cp /tmp/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/node "${APP_PKG}/bin/node"
-rm -rf /tmp/node.tar.xz /tmp/node-v${NODE_VERSION}-linux-${NODE_ARCH}
-chmod +x "${APP_PKG}/bin/node"
 
 # DSH 本体：上游是 pnpm monorepo，直接整库安装不可行；
 # 先在 CI 上 pack 成 tgz，再在应用目录内以 file: 方式装入
@@ -70,6 +63,12 @@ if [ ! -d "${APP_PKG}/node_modules/@deepseek-ai/dsh" ]; then
 fi
 if [ ! -f "${APP_PKG}/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
     echo "FATAL: dsh/lib/bin.js 不存在，构建产物不完整" >&2
+    exit 1
+fi
+# platform=all 的包不应包含架构相关的二进制文件（运行时已交给 nodejs_v24 依赖）
+if find "${APP_PKG}" -name "*.node" | grep -q .; then
+    echo "FATAL: 包内发现 .node 原生模块，与 platform=all 冲突，请检查依赖" >&2
+    find "${APP_PKG}" -name "*.node" >&2
     exit 1
 fi
 

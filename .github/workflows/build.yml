@@ -98,7 +98,7 @@ jobs:
           pnpm --filter @deepseek-ai/dsh pack --pack-destination ../tgz
           echo "DSH_TGZ=${GITHUB_WORKSPACE}/tgz/$(ls ../tgz | head -1)" >> "$GITHUB_ENV"
 
-      - name: 组装 fnOS 应用目录（含下载 arm64 node）
+      - name: 组装 fnOS 应用目录
         if: steps.check.outputs.skip != 'true'
         env:
           DSH_VERSION: ${{ steps.ver.outputs.version }}
@@ -118,15 +118,16 @@ jobs:
           PNPM_BIN="$(command -v pnpm)" \
             bash scripts/assemble.sh
 
-      - name: 校验 node 二进制架构（必须 arm64）
+      - name: 校验包体（无原生模块、产物齐全）
         if: steps.check.outputs.skip != 'true'
         run: |
-          # fnpack 产物最终运行在 arm64 NAS 上，提前在这里确认没拷错架构
-          file stage/DSH/bin/node | grep -q "ARM aarch64" || {
-            echo "::error::bin/node 不是 arm64 架构！"
+          # platform=all 的包不应含 .node 原生模块（运行时由 nodejs_v24 依赖提供）
+          if find stage/DSH -name "*.node" | grep -q .; then
+            echo "::error::包内发现 .node 原生模块，与 platform=all 冲突"
+            find stage/DSH -name "*.node"
             exit 1
-          }
-          echo "✓ bin/node 是 arm64"
+          fi
+          echo "✓ 包体校验通过（纯 JS，跨架构通用）"
 
       - name: fnpack 打包
         if: steps.check.outputs.skip != 'true'
@@ -138,14 +139,14 @@ jobs:
           fi
           fnpack build
           FPK=$(ls *.fpk | head -1)
-          mv "${FPK}" "${GITHUB_WORKSPACE}/DSH_arm64.fpk"
+          mv "${FPK}" "${GITHUB_WORKSPACE}/DSH_all.fpk"
 
       - name: 上传构建产物 artifact
         if: steps.check.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: DSH_arm64
-          path: DSH_arm64.fpk
+          name: DSH_all
+          path: DSH_all.fpk
 
       - name: 发布 GitHub Release
         if: steps.check.outputs.skip != 'true'
@@ -156,12 +157,13 @@ jobs:
           gh release create "v${DSH_VERSION}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "DSH v${DSH_VERSION}" \
-            --notes "DeepSeek Harness v${DSH_VERSION} 飞牛 fnOS 自动构建版（arm64）。
+            --notes "DeepSeek Harness v${DSH_VERSION} 飞牛 fnOS 自动构建版（跨架构）。
 
           **更新内容见上游**: https://github.com/deepseek-ai/deepseek-harness
 
           **安装方式**:
-          1. 下载下方 \`DSH_arm64.fpk\`
+          1. 下载下方 \`DSH_all.fpk\`
           2. 飞牛应用中心 → 手动安装 → 上传该文件
-          3. 安装向导中确认端口（默认 3082，与官方版 3080 并存不冲突）" \
-            "DSH_arm64.fpk"
+          3. 通过飞牛统一网关访问（/app/dsh），需先登录 NAS，无端口冲突
+          4. 依赖：应用中心需已安装 nodejs_v24 运行时" \
+            "DSH_all.fpk"

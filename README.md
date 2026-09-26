@@ -45,29 +45,34 @@ DSH/
 在 **已发布 Release** 后，NAS 的 SSH 终端执行：
 
 ```bash
-# 1. 下载最新 fpk（arm64 版）
-wget -O /tmp/DSH.fpk https://github.com/<你的用户名>/DSH/releases/latest/download/DSH_arm64.fpk
+# 1. 下载最新 fpk（跨架构版，x86/arm 通用）
+wget -O /tmp/DSH.fpk https://github.com/<你的用户名>/DSH/releases/latest/download/DSH_all.fpk
 
 # 2. 安装（或直接在飞牛应用中心手动上传安装）
 appcenter-cli install-fpk /tmp/DSH.fpk
 ```
 
-安装时向导会要求填服务端口（默认 3082），装完桌面出现 DSH 卡片，点开即用。
+安装时向导保持默认（启用统一网关）即可，装完桌面出现 DSH 卡片，点开即用。
+依赖：应用中心需已安装 `nodejs_v24` 运行时（manifest 已声明，缺失时应用中心会自动安装）。
 
 ## 端口约定
 
-| 端口 | 用途 |
-|------|------|
-| 3082 | 对外服务（局域网反向代理） |
-| 3083 | DSH 内部端口（仅 127.0.0.1） |
+**默认不占用任何端口** —— 采用飞牛官方推荐的"统一网关"接入：
 
-与官方已装的 `deepseek-harness`（3080/3081）并存不冲突。安装向导里可改。
+- 应用在安装目录创建 Unix Socket（`dsh.sock`）
+- 飞牛网关把 `/app/dsh` 转发过来，转发前先校验 NAS 登录态
+- 局域网任何设备打开 `http://NAS地址/app/dsh`，用飞牛账号登录即可使用
+
+相比传统端口方案的三大好处：**零端口冲突**、**必须登录 NAS 才能访问**（不向局域网裸暴露）、WebSocket 原生支持。
+
+向导里也保留了传统端口模式作为回退（关闭"启用统一网关"开关即可），默认端口 3082。
 
 ## 与官方版的差异
 
 | 项目 | 官方 deepseek-harness | 本项目 DSH |
 |------|----------------------|-----------|
 | appname | `deepseek-harness` | `DSH` |
-| 端口 | 3080 / 3081 | 3082 / 3083 |
+| 接入方式 | 端口 3080（局域网裸暴露） | 统一网关 `/app/dsh`（NAS 登录鉴权） |
+| Node 运行时 | 自带 125MB 二进制 | 复用应用中心 `nodejs_v24`（包体小 90%+） |
 | 版本 | 跟随打包时点 | CI 自动跟上游最新 |
 | 数据 | `var/` + `home/` | 独立目录，互不影响 |
