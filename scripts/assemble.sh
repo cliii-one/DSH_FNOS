@@ -67,7 +67,7 @@ EOF
 # COREPACK_ENABLE_STRICT=0 防止上游 packageManager 字段触发 corepack 强制切版本
 echo "==> pnpm 版本: $("${PNPM_BIN:-pnpm}" --version)"
 set +e
-(cd "${APP_PKG}" && COREPACK_ENABLE_STRICT=0 npm_config_arch=arm64 npm_config_target_arch=arm64 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile --reporter append-only)
+(cd "${APP_PKG}" && COREPACK_ENABLE_STRICT=0 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile --reporter append-only)
 INSTALL_EXIT=$?
 set -e
 if [ ${INSTALL_EXIT} -ne 0 ]; then
@@ -90,15 +90,14 @@ if [ ! -f "${APP_PKG}/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
     echo "FATAL: dsh/lib/bin.js 不存在，构建产物不完整" >&2
     exit 1
 fi
-# 原生模块校验：目标平台是 arm64 NAS，
-# 必须有 linux-arm64 产物；不能混入 linux-x64 产物（装了也跑不了）
+# 原生模块校验：arm64 运行器上原生安装，产物应为 linux-arm64
+# 必须有 linux-arm64 产物；除 node-pty 自带的全平台 prebuilds 外不得有 linux-x64 产物
 if ! find "${APP_PKG}" -name "*.node" -path "*linux-arm64*" | grep -q .; then
     echo "FATAL: 未找到 linux-arm64 原生模块，arm64 NAS 上无法运行" >&2
     exit 1
 fi
 if find "${APP_PKG}" -name "*.node" -path "*linux-x64*" | grep -v "node-pty" | grep -q .; then
-    # node-pty 包结构自带全平台 prebuilds 目录，属正常情况，放行
-    echo "FATAL: 包内混入 linux-x64 原生模块，请检查 npm_config_arch 是否生效" >&2
+    echo "FATAL: 包内混入 linux-x64 原生模块，请检查运行器架构" >&2
     find "${APP_PKG}" -name "*.node" -path "*linux-x64*" | grep -v "node-pty" >&2
     exit 1
 fi

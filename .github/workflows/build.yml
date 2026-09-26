@@ -41,7 +41,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 原生 arm64 运行器（公共仓库免费）：
+    # 依赖的原生模块（koffi/node-pty 等）直接按 arm64 原生安装，与 NAS 架构一致，
+    # 免去 x64 上交叉安装导致的产物架构不匹配
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout 本仓库（应用壳）
         uses: actions/checkout@v4
@@ -112,8 +115,8 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: |
           # 官方静态分发地址（直接是二进制，非 zip）
-          # CI 是 amd64，用 fnpack-1.2.3-linux-amd64；NAS 本机打包装 arm64 版
-          FNPACK_URL="https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64"
+          # arm64 运行器，用 arm64 版 fnpack
+          FNPACK_URL="https://static2.fnnas.com/fnpack/fnpack-1.2.1-linux-arm64"
           curl -sfL --retry 3 -o /tmp/fnpack "${FNPACK_URL}"
           chmod +x /tmp/fnpack
           sudo mv /tmp/fnpack /usr/local/bin/fnpack
@@ -157,14 +160,14 @@ jobs:
       - name: 校验包体（arm64 原生产物齐全）
         if: steps.check.outputs.skip != 'true'
         run: |
-          # 目标平台是 arm64 NAS：必须有 linux-arm64 产物，禁止 linux-x64 产物
+          # arm64 原生运行器上安装，产物应为 linux-arm64；node-pty 自带全平台 prebuilds 放行
           if ! find stage/DSH -name "*.node" -path "*linux-arm64*" | grep -q .; then
             echo "::error::未找到 linux-arm64 原生模块，arm64 NAS 无法运行"
             exit 1
           fi
           # node-pty 包结构自带全平台 prebuilds，放行
           if find stage/DSH -name "*.node" -path "*linux-x64*" | grep -v "node-pty" | grep -q .; then
-            echo "::error::包内混入 linux-x64 原生模块（npm_config_arch 未生效？）"
+            echo "::error::包内混入 linux-x64 原生模块（运行器架构不对？）"
             find stage/DSH -name "*.node" -path "*linux-x64*" | grep -v node-pty
             exit 1
           fi
