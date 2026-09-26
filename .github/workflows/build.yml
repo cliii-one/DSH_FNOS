@@ -184,6 +184,8 @@ jobs:
       - name: fnpack 打包
         if: steps.check.outputs.skip != 'true'
         working-directory: stage/DSH
+        env:
+          DSH_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           if ! command -v fnpack >/dev/null 2>&1; then
             echo "::error::fnpack 不可用，请检查下载地址"
@@ -191,14 +193,15 @@ jobs:
           fi
           fnpack build
           FPK=$(ls *.fpk | head -1)
-          mv "${FPK}" "${GITHUB_WORKSPACE}/DSH_all.fpk"
+          # 产物名带版本号，如 DSH_v0.1.7-rc.2_all.fpk
+          mv "${FPK}" "${GITHUB_WORKSPACE}/DSH_v${DSH_VERSION}_all.fpk"
 
       - name: 上传构建产物 artifact
         if: steps.check.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: DSH_all
-          path: DSH_all.fpk
+          name: DSH_v${{ steps.ver.outputs.version }}_all
+          path: DSH_v${{ steps.ver.outputs.version }}_all.fpk
 
       - name: 发布 GitHub Release
         if: steps.check.outputs.skip != 'true'
@@ -213,7 +216,7 @@ jobs:
           **更新内容见上游**: https://github.com/deepseek-ai/deepseek-harness
 
           **安装/升级方式**:
-          1. 下载下方 `DSH_all.fpk`
+          1. 下载下方 `DSH_v${DSH_VERSION}_all.fpk`
           2. 飞牛应用中心 → 手动安装 → 上传该文件（已安装则覆盖升级）
           3. 通过飞牛统一网关访问（/app/dsh），需先登录 NAS，无端口冲突
           4. 依赖：应用中心需已安装 nodejs_v24 运行时
@@ -221,12 +224,12 @@ jobs:
           # tag 已存在则更新资产与说明，否则创建
           if gh release view "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release v${DSH_VERSION} 已存在，更新资产"
-            gh release upload "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" --clobber "DSH_all.fpk"
+            gh release upload "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" --clobber "DSH_v${DSH_VERSION}_all.fpk"
             gh release edit "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
           else
             gh release create "v${DSH_VERSION}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "DSH v${DSH_VERSION}" \
               --notes-file release-notes.md \
-              "DSH_all.fpk"
+              "DSH_v${DSH_VERSION}_all.fpk"
           fi
