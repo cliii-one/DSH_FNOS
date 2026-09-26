@@ -63,7 +63,7 @@ onlyBuiltDependencies:
   - "node-pty"
   - "protobufjs"
 EOF
-(cd "${APP_PKG}" && "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile)
+(cd "${APP_PKG}" && npm_config_arch=arm64 npm_config_target_arch=arm64 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile)
 
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_PKG}/bin/runner.js"
@@ -78,11 +78,17 @@ if [ ! -f "${APP_PKG}/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
     echo "FATAL: dsh/lib/bin.js 不存在，构建产物不完整" >&2
     exit 1
 fi
-# platform=all 的包不应包含架构相关的二进制文件（运行时已交给 nodejs_v24 依赖）
-if find "${APP_PKG}" -name "*.node" | grep -q .; then
-    echo "FATAL: 包内发现 .node 原生模块，与 platform=all 冲突，请检查依赖" >&2
-    find "${APP_PKG}" -name "*.node" >&2
+# 原生模块校验：目标平台是 arm64 NAS，
+# 必须有 linux-arm64 产物；不能混入 linux-x64 产物（装了也跑不了）
+if ! find "${APP_PKG}" -name "*.node" -path "*linux-arm64*" | grep -q .; then
+    echo "FATAL: 未找到 linux-arm64 原生模块，arm64 NAS 上无法运行" >&2
     exit 1
 fi
+if find "${APP_PKG}" -name "*.node" -path "*linux-x64*" | grep -q .; then
+    echo "FATAL: 包内混入 linux-x64 原生模块，请检查 npm_config_arch 是否生效" >&2
+    find "${APP_PKG}" -name "*.node" -path "*linux-x64*" >&2
+    exit 1
+fi
+echo "    原生模块校验通过（linux-arm64 产物齐全）"
 
 echo "==> 组装完成: ${APP_PKG}"

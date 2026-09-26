@@ -89,7 +89,9 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          # 用 pnpm 10：其 onlyBuiltDependencies 白名单行为已在本地实测验证；
+          # pnpm 11 对安装脚本审批更严格，白名单写法有差异
+          version: 10
 
       - name: 安装上游依赖并构建
         if: steps.check.outputs.skip != 'true'
@@ -129,16 +131,20 @@ jobs:
           PNPM_BIN="$(command -v pnpm)" \
             bash scripts/assemble.sh
 
-      - name: 校验包体（无原生模块、产物齐全）
+      - name: 校验包体（arm64 原生产物齐全）
         if: steps.check.outputs.skip != 'true'
         run: |
-          # platform=all 的包不应含 .node 原生模块（运行时由 nodejs_v24 依赖提供）
-          if find stage/DSH -name "*.node" | grep -q .; then
-            echo "::error::包内发现 .node 原生模块，与 platform=all 冲突"
-            find stage/DSH -name "*.node"
+          # 目标平台是 arm64 NAS：必须有 linux-arm64 产物，禁止 linux-x64 产物
+          if ! find stage/DSH -name "*.node" -path "*linux-arm64*" | grep -q .; then
+            echo "::error::未找到 linux-arm64 原生模块，arm64 NAS 无法运行"
             exit 1
           fi
-          echo "✓ 包体校验通过（纯 JS，跨架构通用）"
+          if find stage/DSH -name "*.node" -path "*linux-x64*" | grep -q .; then
+            echo "::error::包内混入 linux-x64 原生模块（npm_config_arch 未生效？）"
+            find stage/DSH -name "*.node" -path "*linux-x64*"
+            exit 1
+          fi
+          echo "✓ 包体校验通过（linux-arm64 产物齐全）"
 
       - name: fnpack 打包
         if: steps.check.outputs.skip != 'true'
