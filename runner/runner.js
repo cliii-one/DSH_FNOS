@@ -43,6 +43,20 @@ const DSH_BIN = path.join(APP_DIR, 'node_modules', '@deepseek-ai', 'dsh', 'lib',
 // umask 0：DSH 创建的文件对 NAS 用户/SMB 完全可读写
 try { process.umask(0); } catch (e) {}
 
+// 在 HOME（@appshare/dsh）下确保 workspace 目录存在：
+// 会话文件工作区与 .dsh 配置同目录，与官方 deepseek-harness 布局一致
+function ensureWorkspace() {
+    const homeDir = process.env.HOME || VAR_DIR;
+    const wsDir = path.join(homeDir, 'workspace');
+    try {
+        if (!fs.existsSync(wsDir)) {
+            fs.mkdirSync(wsDir, { recursive: true, mode: 0o777 });
+        } else {
+            fs.chmodSync(wsDir, 0o777);
+        }
+    } catch (e) {}
+}
+
 // ---------- 第一步：启动 dsh web ----------
 
 function startDsh() {
@@ -191,6 +205,7 @@ async function main() {
         process.exit(1);
     }
     fs.mkdirSync(VAR_DIR, { recursive: true });
+    ensureWorkspace();
 
     const dshChild = startDsh();
     let server = null;
