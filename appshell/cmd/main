@@ -35,7 +35,18 @@ if [ ! -x "${NODE_RUNTIME}" ]; then
     NODE_RUNTIME="$(command -v node || true)"
 fi
 
+# var 数据目录：正常由安装器创建；若缺失（手动清理后未重装），
+# 尝试创建，失败则回退到共享目录下的 var 子目录，保证应用可用
 mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+if [ ! -d "${TRIM_PKGVAR}" ]; then
+    FALLBACK_VAR="${TRIM_DATA_SHARE_PATHS%%:*}/.appdata"
+    mkdir -p "${FALLBACK_VAR}" 2>/dev/null || true
+    if [ -d "${FALLBACK_VAR}" ]; then
+        TRIM_PKGVAR="${FALLBACK_VAR}"
+        LOG_FILE="${TRIM_PKGVAR}/${APPNAME}.log"
+        PID_FILE="${TRIM_PKGVAR}/${APPNAME}.pid"
+    fi
+fi
 
 LOG_FILE="${TRIM_PKGVAR}/${APPNAME}.log"
 PID_FILE="${TRIM_PKGVAR}/${APPNAME}.pid"
