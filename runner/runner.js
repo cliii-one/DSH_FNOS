@@ -43,29 +43,27 @@ const DSH_BIN = path.join(APP_DIR, 'node_modules', '@deepseek-ai', 'dsh', 'lib',
 // umask 0：DSH 创建的文件对 NAS 用户/SMB 完全可读写
 try { process.umask(0); } catch (e) {}
 
-// 在 HOME（@appshare/dsh）下确保 workspace 目录存在：
-// 会话文件工作区与 .dsh 配置同目录，与官方 deepseek-harness 布局一致
-function ensureWorkspace() {
-    const homeDir = process.env.HOME || VAR_DIR;
-    const wsDir = path.join(homeDir, 'workspace');
-    try {
-        if (!fs.existsSync(wsDir)) {
-            fs.mkdirSync(wsDir, { recursive: true, mode: 0o777 });
-        } else {
-            fs.chmodSync(wsDir, 0o777);
-        }
-    } catch (e) {}
-}
-
-// ---------- 第一步：启动 dsh web ----------
-
 function startDsh() {
+    // dsh web 启动时会打印一次性访问 token（http://127.0.0.1:PORT/?token=xxx），
+    // 网关过来的请求没有这个 token 会被 DSH 拒绝（Not Found）。
+    // 这里接管 stdout，捕获 token 供转发时自动附加
     const dsh = spawn(NODE_BIN, [DSH_BIN, 'web', '--port', String(DSH_PORT), '--no-open'], {
         // HOME 继承 cmd/main 设置的值（@appshare/dsh），.dsh 落在共享目录
         env: { ...process.env },
         cwd: VAR_DIR,
-        stdio: ['ignore', 'inherit', 'inherit'],
+        stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const collectToken = (chunk) => {
+        const text = chunk.toString();
+        process.stdout.write('[dsh] ' + text);
+        const m = text.match(/token=([A-Za-z0-9_-]+)/);
+        if (m && !process.env.DSH_AUTH_TOKEN) {
+            process.env.DSH_AUTH_TOKEN = m[1];
+            console.log('[Bridge] 已捕获 dsh 访问 token，转发请求将自动携带');
+        }
+    };
+    dsh.stdout.on('data', collectToken);
+    dsh.stderr.on('data', collectToken);
 
     dsh.on('exit', (code) => {
         console.log(`[Bridge] dsh web exited (${code}), bridge exits too`);
@@ -81,10 +79,15 @@ function startDsh() {
 const POLYFILL = ';if(typeof crypto!=="undefined"&&!crypto.randomUUID){crypto.randomUUID=function(){return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==="x"?r:(Math.random()*0x3|0x8);return v.toString(16);});}};';
 
 function proxyRequest(req, res) {
+    // 自动补 token：dsh 需要 ?token= 才放行；仅当用户没带 token 且已捕获到时
+    let reqPath = req.url;
+    if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(reqPath)) {
+        reqPath += (reqPath.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
+    }
     const upstream = http.request({
         hostname: '127.0.0.1',
         port: DSH_PORT,
-        path: req.url,
+        path: reqPath,
         method: req.method,
         headers: { ...req.headers, host: `127.0.0.1:${DSH_PORT}` },
     }, (upRes) => {
@@ -122,8 +125,12 @@ function startFallbackProxy() {
 
     // WebSocket 升级：直接透传
     server.on('upgrade', (req, socket, head) => {
+        let upUrl = req.url;
+        if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(upUrl)) {
+            upUrl += (upUrl.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
+        }
         const upstream = net.connect(DSH_PORT, '127.0.0.1', () => {
-            const lines = [`${req.method} ${req.url} HTTP/1.1`];
+            const lines = [`${req.method} ${upUrl} HTTP/1.1`];
             for (let i = 0; i < req.rawHeaders.length; i += 2) {
                 lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
             }
@@ -153,10 +160,14 @@ function startBridge() {
 
     // WebSocket 升级请求：透传到 dsh web
     server.on('upgrade', (req, socket, head) => {
+        let upUrl = req.url;
+        if (process.env.DSH_AUTH_TOKEN && !/[?&]token=/.test(upUrl)) {
+            upUrl += (upUrl.includes('?') ? '&' : '?') + 'token=' + process.env.DSH_AUTH_TOKEN;
+        }
         const upstream = http.request({
             hostname: '127.0.0.1',
             port: DSH_PORT,
-            path: req.url,
+            path: upUrl,
             method: req.method,
             headers: { ...req.headers, host: `127.0.0.1:${DSH_PORT}` },
         });
@@ -205,7 +216,6 @@ async function main() {
         process.exit(1);
     }
     fs.mkdirSync(VAR_DIR, { recursive: true });
-    ensureWorkspace();
 
     const dshChild = startDsh();
     let server = null;
