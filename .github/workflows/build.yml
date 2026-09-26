@@ -140,6 +140,20 @@ jobs:
               exit 1
             }
 
+      - name: 调试快照（始终上传，定位用）
+        if: always()
+        run: |
+          # 无论成败，把 stage 目录清单与 pnpm store 状态打包，供远程诊断
+          {
+            echo "== pnpm 版本 =="; pnpm --version
+            echo "== stage/DSH 顶层 =="; ls -la stage/DSH/ 2>/dev/null
+            echo "== pnpm-workspace.yaml =="; cat stage/DSH/pnpm-workspace.yaml 2>/dev/null
+            echo "== node_modules/.pnpm 数量 =="; ls stage/DSH/node_modules/.pnpm 2>/dev/null | wc -l
+            echo "== dsh 本体 =="; ls stage/DSH/node_modules/@deepseek-ai/dsh/lib/bin.js 2>/dev/null
+            echo "== .node 产物分布 =="; find stage/DSH -name "*.node" 2>/dev/null | grep -oE '(linux|darwin|win32)-(x64|arm64)[^/]*' | sort | uniq -c
+          } > debug-snapshot.txt 2>&1 || true
+          cat debug-snapshot.txt
+
       - name: 校验包体（arm64 原生产物齐全）
         if: steps.check.outputs.skip != 'true'
         run: |
