@@ -47,7 +47,8 @@ try { process.umask(0); } catch (e) {}
 
 function startDsh() {
     const dsh = spawn(NODE_BIN, [DSH_BIN, 'web', '--port', String(DSH_PORT), '--no-open'], {
-        env: { ...process.env, HOME: VAR_DIR },
+        // HOME 继承 cmd/main 设置的值（@appshare/dsh），.dsh 落在共享目录
+        env: { ...process.env },
         cwd: VAR_DIR,
         stdio: ['ignore', 'inherit', 'inherit'],
     });

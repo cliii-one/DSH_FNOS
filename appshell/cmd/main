@@ -156,9 +156,15 @@ start_process() {
     fi
 
     export PATH="$(dirname "${NODE_RUNTIME}"):${PATH}"
-    # HOME 指向 var 目录：DSH 的 .dsh 配置/凭据/插件 profile 都落在 Home 下，
-    # 升级应用时配置与会话数据得以保留
-    export HOME="${TRIM_PKGVAR}"
+    # HOME 决定 DSH 的 .dsh 配置/凭据/插件 profile 位置。
+    # 优先用数据共享目录（@appshare/dsh，飞牛文件管理可直接访问、SMB 可见），
+    # 不可用时回退 var 目录
+    DSH_HOME="${TRIM_DATA_SHARE_PATHS%%:*}"
+    if [ -z "${DSH_HOME}" ] || [ ! -d "${DSH_HOME}" ]; then
+        DSH_HOME="${TRIM_PKGVAR}"
+    fi
+    mkdir -p "${DSH_HOME}" 2>/dev/null || true
+    export HOME="${DSH_HOME}"
     export TRIM_APPDEST="${TRIM_APPDEST}"
     export TRIM_PKGVAR="${TRIM_PKGVAR}"
 
