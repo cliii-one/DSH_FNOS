@@ -4,15 +4,23 @@
 # 全程在 GitHub x64 服务器上构建，NAS 本机零负担
 #
 # 触发方式：
-#   1. 手动 workflow_dispatch（可指定上游 ref，默认 master）
-#   2. 每日定时检查上游是否发新版，有新版本才构建发布
+#   1. push 到 master 自动构建（版本检查兜底，已发布过的版本自动跳过）
+#   2. 手动 workflow_dispatch（可指定上游 ref，默认 master）
+#   3. 每日定时检查上游是否发新版，有新版本才构建发布
 #
-# 流程：拉上游源码 -> pnpm 构建 -> pack tgz -> 组装应用壳（含 arm64 node）
+# 流程：拉上游源码 -> pnpm 构建 -> pack tgz -> 组装应用壳（运行时用 nodejs_v24 依赖）
 #      -> fnpack 打包 -> 上传 artifact + 发 GitHub Release
 # =============================================================
 name: build
 
 on:
+  push:
+    branches: [master]
+    # 文档类改动不触发构建
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+      - "**.md"
   workflow_dispatch:
     inputs:
       upstream_ref:
