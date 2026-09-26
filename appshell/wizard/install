@@ -1,0 +1,21 @@
+[
+  {
+    "stepTitle": "DSH 服务配置",
+    "items": [
+      {
+        "type": "text",
+        "field": "wizard_port",
+        "label": "对外服务端口（局域网访问用）",
+        "initValue": "3082",
+        "rules": [
+          { "required": true, "message": "请输入端口" },
+          { "pattern": "^[0-9]+$", "message": "仅支持数字" }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "DSH 与官方 deepseek-harness 应用可并存，默认端口 3082 不与其冲突。数据保存在应用的 var 与共享目录中，升级/卸载不影响会话记录。"
+      }
+    ]
+  }
+]

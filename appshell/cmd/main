@@ -1,0 +1,271 @@
+#!/bin/bash
+
+# DSH - 飞牛 fnOS 生命周期控制脚本
+# 依赖：上游官方 DSH 本体（node_modules/@deepseek-ai/dsh）+ 自带 node 二进制
+# 与官方 deepseek-harness 应用（3080/3081）并存，端口独立可配（默认 3082/3083）
+
+APPNAME="${TRIM_APPNAME:-DSH}"
+
+# 对外端口：优先取向导配置的 wizard_port，回退 manifest 的 service_port，最后兜底 3082
+SERVICE_PORT="${wizard_port:-${TRIM_SERVICE_PORT:-3082}}"
+# 内部端口：对外端口 +1（仅监听 127.0.0.1，由 runner.js 反代）
+INTERNAL_PORT=$((SERVICE_PORT + 1))
+PORT_PATTERN=":(${SERVICE_PORT}|${INTERNAL_PORT}) "
+
+TRIM_APPDEST="${TRIM_APPDEST:-}"
+TRIM_PKGVAR="${TRIM_PKGVAR:-}"
+
+if [ -z "${TRIM_APPDEST}" ] || [ -z "${TRIM_PKGVAR}" ]; then
+    echo "ERROR: TRIM_APPDEST or TRIM_PKGVAR not set" >&2
+    exit 1
+fi
+
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+
+LOG_FILE="${TRIM_PKGVAR}/${APPNAME}.log"
+PID_FILE="${TRIM_PKGVAR}/${APPNAME}.pid"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+# 日志轮转：超过 10MB 保留一份 .log.1，防止无限增长
+rotate_log_if_needed() {
+    [ -f "${LOG_FILE}" ] || return 0
+    local size
+    size=$(stat -c%s "${LOG_FILE}" 2>/dev/null || echo 0)
+    if [ "${size}" -gt $((10 * 1024 * 1024)) ]; then
+        mv -f "${LOG_FILE}" "${LOG_FILE}.1" 2>/dev/null || true
+        log_msg "Log rotated (${size} bytes)"
+    fi
+}
+rotate_log_if_needed
+
+# 校验 PID 是否为本应用进程（runner.js / @deepseek-ai/dsh 特征）
+# 防止端口被其他应用占用时把别人家进程当成自己的实例
+is_our_process() {
+    local pid="$1"
+    [ -z "${pid}" ] && return 1
+    local cmdline
+    cmdline=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null)
+    case "${cmdline}" in
+        *runner.js*|*@deepseek-ai/dsh*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# PID 文件丢失/失效时，按命令行特征找回存活实例
+# pgrep 需排除自身，避免命中正在执行本脚本的 bash 进程
+runner_pids() {
+    pgrep -f "${TRIM_APPDEST}/bin/runner.js" 2>/dev/null | grep -vx "$$" | head -n 1
+}
+
+instance_alive() {
+    local pid="$1"
+    [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
+}
+
+# 端口已被占用时，找到持有该端口的进程
+port_owner_pid() {
+    local owner
+    owner=$(netstat -tlnp 2>/dev/null | grep -E "${PORT_PATTERN}" | sed -n 's/.*[[:space:]]\([0-9]\+\)\/[A-Za-z0-9_+.-]*[[:space:]]*$/\1/p' | sort -un | head -n 1)
+    [ -n "${owner}" ] && echo "${owner}"
+}
+
+recover_running_instance() {
+    local pid
+    pid=$(runner_pids)
+    if instance_alive "${pid}"; then
+        printf "%s" "${pid}" > "${PID_FILE}"
+        log_msg "Recovered running instance PID ${pid} (PID file was missing/stale)"
+        return 0
+    fi
+    return 1
+}
+
+start_process() {
+    log_msg "Starting ${APPNAME} (port ${SERVICE_PORT})..."
+
+    # 已在运行则直接返回：优先读 PID 文件，失效时按特征兜底找回
+    if [ -f "${PID_FILE}" ]; then
+        local old_pid
+        old_pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if instance_alive "${old_pid}"; then
+            log_msg "${APPNAME} already running with PID ${old_pid}"
+            return 0
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    if recover_running_instance; then
+        return 0
+    fi
+
+    # DSH 本体完整性检查：上游 node_modules 缺失时给出用户可读的报错
+    if [ ! -d "${TRIM_APPDEST}/node_modules/@deepseek-ai/dsh" ]; then
+        log_msg "ERROR: DSH core missing (${TRIM_APPDEST}/node_modules/@deepseek-ai/dsh)"
+        echo "✗ DSH 本体缺失，安装包不完整，请重新下载安装。" > "${TRIM_TEMP_LOGFILE}" 2>/dev/null || true
+        return 1
+    fi
+
+    # 启动前确认端口未被占用（区分本应用实例与其他应用）
+    local bound_pid
+    bound_pid=$(port_owner_pid)
+    if instance_alive "${bound_pid}"; then
+        if is_our_process "${bound_pid}"; then
+            log_msg "Port ${SERVICE_PORT}/${INTERNAL_PORT} held by our instance PID ${bound_pid}, treating as running"
+            printf "%s" "${bound_pid}" > "${PID_FILE}"
+            return 0
+        else
+            log_msg "ERROR: port held by foreign process PID ${bound_pid}"
+            echo "✗ 端口 ${SERVICE_PORT} 已被其他应用 (PID ${bound_pid}) 占用，请在应用设置中更换端口" >&2
+            return 1
+        fi
+    fi
+
+    export PATH="${TRIM_APPDEST}/bin:$PATH"
+    # HOME 指向 var 目录：DSH 的 .dsh 配置/凭据/插件 profile 都落在Home 下，
+    # 这样升级应用时配置与会话数据得以保留
+    export HOME="${TRIM_PKGVAR}"
+    export PORT="${SERVICE_PORT}"
+    export DSH_PORT="${INTERNAL_PORT}"
+    export TRIM_APPDEST="${TRIM_APPDEST}"
+    export TRIM_PKGVAR="${TRIM_PKGVAR}"
+
+    cd "${TRIM_PKGVAR}" || return 1
+
+    # 启动统一调度器 runner.js（内部再拉起 dsh web + 局域网反代）
+    "${TRIM_APPDEST}/bin/node" "${TRIM_APPDEST}/bin/runner.js" >> "${LOG_FILE}" 2>&1 &
+    local new_pid=$!
+    printf "%s" "${new_pid}" > "${PID_FILE}"
+    log_msg "Started with PID: ${new_pid}"
+
+    # 探测 10 秒：若进程秒退则如实报错，避免误报启动成功
+    local count=0
+    while [ ${count} -lt 10 ]; do
+        if ! kill -0 "${new_pid}" 2>/dev/null; then
+            log_msg "Failed to start or process exited early (after ${count}s)"
+            rm -f "${PID_FILE}"
+            return 1
+        fi
+        sleep 1
+        count=$((count + 1))
+    done
+    return 0
+}
+
+stop_process() {
+    log_msg "Stopping ${APPNAME}..."
+
+    # 先向 PID 文件记录的进程发 TERM，给 5 秒优雅退出
+    if [ -f "${PID_FILE}" ]; then
+        local pid
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+            log_msg "Sending TERM to PID ${pid}"
+            kill -TERM "${pid}" 2>/dev/null || true
+            local count=0
+            while kill -0 "${pid}" 2>/dev/null && [ $count -lt 5 ]; do
+                sleep 1
+                count=$((count + 1))
+            done
+            if kill -0 "${pid}" 2>/dev/null; then
+                log_msg "Force killing PID ${pid}"
+                kill -KILL "${pid}" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    # 兜底：按端口清理持有者（runner.js 可能已退出但 dsh 子进程还占着端口）
+    local port_pids
+    port_pids=$(netstat -tlnp 2>/dev/null | grep -E "${PORT_PATTERN}" | sed -n 's/.*[[:space:]]\([0-9]\+\)\/[A-Za-z0-9_+.-]*[[:space:]]*$/\1/p' | sort -un)
+    for pid in $(echo "${port_pids}"); do
+        [ -z "${pid}" ] && continue
+        [ "${pid}" = "$$" ] && continue
+        kill -9 "${pid}" 2>/dev/null || true
+    done
+
+    # 清理残留的 runner / dsh 子进程；模式带路径限定，避免误杀无关进程
+    local cleanup_pids
+    cleanup_pids=$(pgrep -f "bin/runner\.js" 2>/dev/null; pgrep -f "@deepseek-ai/dsh.*bin\.js web" 2>/dev/null)
+    for pid in $(echo "${cleanup_pids}" | sort -un); do
+        [ -z "${pid}" ] && continue
+        [ "${pid}" = "$$" ] && continue
+        kill -9 "${pid}" 2>/dev/null || true
+    done
+
+    # 确认端口已释放，否则如实报告失败
+    sleep 1
+    if ss -tln 2>/dev/null | grep -qE "${PORT_PATTERN}"; then
+        log_msg "ERROR: port still bound after stop"
+        rm -f "${PID_FILE}" 2>/dev/null || true
+        return 1
+    fi
+    rm -f "${PID_FILE}" 2>/dev/null || true
+    log_msg "Stopped successfully"
+    return 0
+}
+
+status_process() {
+    if [ -f "${PID_FILE}" ]; then
+        local pid
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if instance_alive "${pid}"; then
+            return 0
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    if recover_running_instance; then
+        return 0
+    fi
+    return 3
+}
+
+case "$1" in
+start)
+    if start_process; then
+        echo "✓ 启动成功"
+        exit 0
+    else
+        echo "✗ 启动失败"
+        exit 1
+    fi
+    ;;
+stop)
+    if stop_process; then
+        echo "✓ 已停止"
+        exit 0
+    else
+        echo "✗ 停止失败：端口 ${SERVICE_PORT} 仍被占用，请查看日志 ${LOG_FILE}"
+        exit 1
+    fi
+    ;;
+uninstall)
+    stop_process
+    echo "✓ 已清理"
+    exit 0
+    ;;
+status)
+    if status_process; then
+        echo "✓ 服务运行中"
+        exit 0
+    else
+        echo "✗ 服务未运行"
+        exit 3
+    fi
+    ;;
+restart)
+    stop_process
+    sleep 1
+    if start_process; then
+        echo "✓ 重启成功"
+        exit 0
+    else
+        echo "✗ 重启失败"
+        exit 1
+    fi
+    ;;
+*)
+    echo "Usage: $0 {start|stop|status|restart|uninstall}"
+    exit 1
+    ;;
+esac

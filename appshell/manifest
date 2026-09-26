@@ -1,0 +1,17 @@
+appname               = DSH
+version               = 0.1.0
+display_name          = DSH
+desc                  = DeepSeek Harness 飞牛NAS社区版 - AI开发助手，通过GitHub Actions自动跟进上游最新版本构建。与官方版并存，端口独立。
+platform              = arm
+source                = thirdparty
+maintainer            = dsh-fnos
+maintainer_url        = https://github.com/deepseek-ai/deepseek-harness
+distributor           = dsh-fnos
+distributor_url       = https://github.com/deepseek-ai/deepseek-harness
+desktop_uidir         = ui
+desktop_applaunchname = DSH.Application
+service_port          = 3082
+checkport             = false
+ctl_stop              = true
+wizard_dir            = wizard
+checksum              =

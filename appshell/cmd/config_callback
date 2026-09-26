@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# 配置变更后脚本：向导端口可能变化，重启服务使其生效
+"${TRIM_APPDEST}/cmd/main" restart 2>/dev/null || true
+exit 0

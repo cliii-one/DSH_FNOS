@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# 卸载前脚本：停止服务
+"${TRIM_APPDEST}/cmd/main" stop 2>/dev/null || true
+exit 0

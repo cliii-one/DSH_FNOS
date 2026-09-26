@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# 安装后脚本：确保关键目录可被应用用户读写
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+chmod 755 "${TRIM_APPDEST}/cmd/main" 2>/dev/null || true
+exit 0

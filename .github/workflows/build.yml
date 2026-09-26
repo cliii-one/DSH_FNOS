@@ -1,0 +1,171 @@
+# =============================================================
+# DSH for fnOS - GitHub Actions 自动构建
+#
+# 触发方式：
+#   1. 手动 workflow_dispatch（可指定上游 ref，默认 master）
+#   2. 每日定时检查上游是否发新版，有新版本才构建发布
+#
+# 流程：拉上游源码 -> pnpm 构建 -> pack tgz -> 组装应用壳 -> fnpack 打包
+#      -> 上传 artifact + 发 GitHub Release
+# =============================================================
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "上游 deepseek-harness 的分支/标签"
+        required: false
+        default: "master"
+      force_release:
+        description: "即使版本无变化也强制发布"
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    # 每天 UTC 20:00（北京时间次日凌晨 4 点）检查上游更新
+    - cron: "0 20 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 本仓库（应用壳）
+        uses: actions/checkout@v4
+
+      - name: Checkout 上游 deepseek-harness
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ inputs.upstream_ref || 'master' }}
+          path: upstream
+          fetch-depth: 1
+
+      - name: 读取上游版本号
+        id: ver
+        run: |
+          DSH_VERSION=$(node -p "require('./upstream/package.json').version")
+          echo "version=${DSH_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "上游版本: ${DSH_VERSION}"
+
+      - name: 查询是否已发布过该版本
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DSH_VERSION: ${{ steps.ver.outputs.version }}
+          FORCE: ${{ inputs.force_release || 'false' }}
+        run: |
+          if [ "${FORCE}" = "true" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "版本 v${DSH_VERSION} 已发布过，跳过构建"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 安装 Node.js 24
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: 安装 pnpm
+        if: steps.check.outputs.skip != 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: 安装上游依赖并构建
+        if: steps.check.outputs.skip != 'true'
+        working-directory: upstream
+        run: |
+          pnpm install
+          pnpm run build
+
+      - name: pack 上游 dsh 包为 tgz
+        if: steps.check.outputs.skip != 'true'
+        working-directory: upstream
+        run: |
+          mkdir -p ../tgz
+          pnpm --filter @deepseek-ai/dsh pack --pack-destination ../tgz
+          echo "DSH_TGZ=$(ls ../tgz/*.tgz | head -1)" >> "$GITHUB_ENV"
+
+      - name: 组装 fnOS 应用目录
+        if: steps.check.outputs.skip != 'true'
+        env:
+          DSH_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # 下载 fnpack（飞牛官方打包工具，Linux x64 版）
+          curl -sL -o /tmp/fnpack.zip https://download.fnnas.com/fnpack/fnpack-linux-x64.zip || true
+          # 若官方地址不可用，从项目内置 fallback 目录取；CI 上以实际发布地址为准
+          # 这里先装到 /usr/local/bin
+          if [ -f /tmp/fnpack.zip ]; then
+            unzip -o /tmp/fnpack.zip -d /tmp/fnpack
+            chmod +x /tmp/fnpack/fnpack
+            sudo mv /tmp/fnpack/fnpack /usr/local/bin/fnpack
+            fnpack --version || true
+          fi
+          STAGE_DIR="${GITHUB_WORKSPACE}/stage" \
+          UPSTREAM_DIR="${GITHUB_WORKSPACE}/upstream" \
+          DSH_TGZ="${DSH_TGZ}" \
+          PNPM_BIN="$(command -v pnpm)" \
+            bash scripts/assemble.sh
+
+      - name: 在应用目录内安装 tgz 依赖
+        if: steps.check.outputs.skip != 'true'
+        working-directory: stage/DSH
+        run: |
+          node -e '
+            const fs = require("fs");
+            const tgz = process.argv[1];
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf-8"));
+            pkg.dependencies = { "@deepseek-ai/dsh": "file:" + tgz };
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          ' "$DSH_TGZ"
+          pnpm install --prod --no-frozen-lockfile
+
+      - name: fnpack 打包
+        if: steps.check.outputs.skip != 'true'
+        working-directory: stage/DSH
+        run: |
+          if ! command -v fnpack >/dev/null 2>&1; then
+            echo "::error::fnpack 不可用，请检查下载地址"
+            exit 1
+          fi
+          fnpack build
+          FPK=$(ls *.fpk | head -1)
+          mv "${FPK}" "${GITHUB_WORKSPACE}/DSH_arm64.fpk"
+          # fnpack 产物实际为 arm64 平台包（manifest platform=arm）
+          # 若在 x64 CI 上构建 all/arm 包，产物名保持不变
+
+      - name: 上传构建产物 artifact
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSH_arm64
+          path: DSH_arm64.fpk
+
+      - name: 发布 GitHub Release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DSH_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release create "v${DSH_VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "DSH v${DSH_VERSION}" \
+            --notes "DeepSeek Harness v${DSH_VERSION} 飞牛 fnOS 自动构建版（arm64）。
+
+          **更新内容见上游**: https://github.com/deepseek-ai/deepseek-harness/releases
+
+          **安装方式**:
+          1. 下载下方 \`DSH_arm64.fpk\`
+          2. 飞牛应用中心 → 手动安装 → 上传该文件
+          3. 安装向导中确认端口（默认 3082，与官方版 3080 并存不冲突）" \
+            "DSH_arm64.fpk"

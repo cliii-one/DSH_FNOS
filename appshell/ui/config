@@ -1,0 +1,13 @@
+{
+  ".url": {
+    "DSH.Application": {
+      "title": "DSH",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "http",
+      "port": "3082",
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}
