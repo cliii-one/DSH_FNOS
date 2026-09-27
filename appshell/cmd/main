@@ -123,6 +123,13 @@ start_process() {
     # 导致 runner 预置的认证密钥不被读取、前端认证失败。
     # 注意：DSH_HOME 指向 .dsh 目录本身。
     export DSH_HOME="${DSH_DATA_DIR}/.dsh"
+    # 默认工作区目录：dsh 首次使用时会用 `xdg-user-dir DOCUMENTS` 定位系统文档
+    # 目录，并在其下创建 deepseek-harness/default-workspace。
+    # fnOS 未配置 XDG_DOCUMENTS_DIR，该命令会回退返回 $HOME，而 dsh 判定
+    # 「文档目录等于 HOME」即视为不可用并报错（前端提示"无法创建默认工作区"）。
+    # 显式指定文档目录到共享目录下，使工作区落在飞牛文件管理可见的位置。
+    mkdir -p "${DSH_DATA_DIR}/Documents" 2>/dev/null || true
+    export XDG_DOCUMENTS_DIR="${DSH_DATA_DIR}/Documents"
     export PORT="${SERVICE_PORT}"
     export DSH_PORT="${INTERNAL_PORT}"
     export TRIM_APPDEST="${TRIM_APPDEST}"
