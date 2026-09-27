@@ -116,8 +116,42 @@ jobs:
           echo "=== [C] pack tgz 开始 ==="
           mkdir -p ../tgz
           pnpm --filter @deepseek-ai/dsh pack --pack-destination ../tgz
+          DSH_TGZ="${GITHUB_WORKSPACE}/tgz/$(ls ../tgz | head -1)"
+          echo "DSH_TGZ=${DSH_TGZ}" >> "$GITHUB_ENV"
+          # 上游偶发引用尚未发布到 npm 的包（新 experimental 包常滞后发布）。
+          # npm install 处理 file: tgz 时会解析 tgz 内部的 dependencies，
+          # 因此必须在 tgz 内剔除这些包，否则安装必然 E404。
+          # 做法：解开 tgz → 从 package.json 剔除 npm 上不存在的依赖 → 重新打包。
+          node <<'EOF'
+          const { execSync } = require('child_process');
+          const fs = require('fs');
+          const os = require('os');
+          const path = require('path');
+          const tgz = process.env.DSH_TGZ;
+          const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tgz-fix-'));
+          execSync(`tar -xzf ${tgz} -C ${tmp} package/package.json`);
+          const manifestPath = path.join(tmp, 'package', 'package.json');
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+          const removed = [];
+          for (const field of ['dependencies', 'optionalDependencies']) {
+            const deps = manifest[field];
+            if (!deps) continue;
+            for (const [name] of Object.entries(deps)) {
+              if (name.startsWith('file:')) continue;
+              try { execSync(`npm view ${name} version`, { stdio: 'ignore' }); }
+              catch { removed.push(name); delete deps[name]; }
+            }
+          }
+          if (removed.length > 0) {
+            fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+            execSync(`tar -czf ${tgz} -C ${tmp} package`);
+            console.log('已从 tgz 剔除 npm 上不存在的依赖:', removed.join(', '));
+          } else {
+            console.log('tgz 依赖全部可用，无需剔除');
+          }
+          fs.rmSync(tmp, { recursive: true, force: true });
+          EOF
           echo "=== [C] pack tgz 完成: $(ls -la ../tgz) ==="
-          echo "DSH_TGZ=${GITHUB_WORKSPACE}/tgz/$(ls ../tgz | head -1)" >> "$GITHUB_ENV"
 
       - name: 安装 fnpack（飞牛官方打包工具）
         if: steps.check.outputs.skip != 'true'
