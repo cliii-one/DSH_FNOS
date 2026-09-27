@@ -69,44 +69,38 @@ cat > "${APP_CONTENT}/package.json" <<EOF
   }
 }
 EOF
-# 用 npm 而非 pnpm 安装应用依赖：
-# npm 产物是扁平自包含的 node_modules（无符号链接），tar 打包/解压后开箱即用；
-# pnpm 的软链结构在 tar 往返后会断裂。npm 默认执行依赖安装脚本，
-# 原生模块（koffi/node-pty 等）在 arm64 runner 上原生编译/匹配，无需白名单。
-echo "==> npm 版本: $(npm --version)"
+# 用 pnpm 安装应用依赖（与上游 dsh 的 workspace/peerDeps 结构兼容。
+# npm 扁平布局曾导致 dsh 的 /plugins/?? client 模块服务 404 —— 已实测）。
+echo "==> pnpm 版本: $("${PNPM_BIN:-pnpm}" --version)"
+cat > "${APP_CONTENT}/pnpm-workspace.yaml" <<EOF
+allowBuilds:
+  "@deepseek-ai/dsh-subprocess-local": true
+  "@google/genai": true
+  "koffi": true
+  "node-pty": true
+  "protobufjs": true
+minimumReleaseAge: 0
+EOF
 set +e
-(cd "${APP_CONTENT}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
+(cd "${APP_CONTENT}" && COREPACK_ENABLE_STRICT=0 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile --reporter append-only)
 INSTALL_EXIT=$?
 set -e
 if [ ${INSTALL_EXIT} -ne 0 ]; then
-    echo "FATAL: npm install 失败 (exit ${INSTALL_EXIT})" >&2
+    echo "FATAL: pnpm install 失败 (exit ${INSTALL_EXIT})" >&2
+    cat "${APP_CONTENT}/pnpm-workspace.yaml" >&2 || true
     exit ${INSTALL_EXIT}
 fi
+rm -f "${APP_CONTENT}/pnpm-workspace.yaml"
 
-# 扁平化 node_modules：pnpm 依赖符号链接（node_modules/x -> .pnpm/...），
-# tar 打包与解压对软链的处理不可控，链接极易断裂。这里把所有软链替换为实体拷贝
-echo "==> 扁平化 node_modules（消除符号链接）"
-(
-    cd "${APP_CONTENT}"
-    # 多轮处理：软链可能嵌套（@scope/pkg 两层 + .pnpm 内部）
-    for round in 1 2 3; do
-        LINKS=$(find node_modules -type l 2>/dev/null)
-        [ -z "${LINKS}" ] && break
-        while IFS= read -r link; do
-            [ -z "${link}" ] && continue
-            target=$(readlink -f "${link}" 2>/dev/null) || continue
-            if [ -n "${target}" ] && [ -e "${target}" ]; then
-                rm "${link}"
-                cp -a "${target}" "${link}"
-            else
-                # 死链直接删除
-                rm "${link}"
-            fi
-        done <<EOF2
-${LINKS}
-EOF2
-    done
-)
+# 实体化 node_modules：pnpm 的软链结构在 tar 打包/解压往返后会断裂。
+# 方法：pnpm install 到临时目录，然后用 cp -rL 整体解引用复制 ——
+# .pnpm 内部结构被完整实体化，模块解析保持有效。
+# （逐链接替换不可行：会把包挪出 .pnpm 导致其内部相对软链失效）
+echo "==> 实体化 node_modules（解引用 pnpm 软链）"
+mv "${APP_CONTENT}/node_modules" "${APP_CONTENT}/node_modules.pnpm-orig"
+mkdir -p "${APP_CONTENT}/node_modules"
+cp -rL "${APP_CONTENT}/node_modules.pnpm-orig/." "${APP_CONTENT}/node_modules/" 2>/dev/null || true
+rm -rf "${APP_CONTENT}/node_modules.pnpm-orig"
 REMAIN_LINKS=$(find "${APP_CONTENT}/node_modules" -type l 2>/dev/null | wc -l)
 echo "    剩余软链: ${REMAIN_LINKS} 个"
 if [ "${REMAIN_LINKS}" -gt 0 ]; then
@@ -114,6 +108,8 @@ if [ "${REMAIN_LINKS}" -gt 0 ]; then
     find "${APP_CONTENT}/node_modules" -type l >&2
     exit 1
 fi
+# node_modules/.bin 里的软链解引用后是实体脚本，保持可执行
+chmod -R u+rwX "${APP_CONTENT}/node_modules" 2>/dev/null || true
 
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_CONTENT}/bin/runner.js"
