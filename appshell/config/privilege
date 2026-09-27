@@ -2,6 +2,6 @@
   "defaults": {
     "run-as": "package"
   },
-  "username": "DSH",
-  "groupname": "DSH"
+  "username": "dsh",
+  "groupname": "dsh"
 }

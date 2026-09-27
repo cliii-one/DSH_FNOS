@@ -10,7 +10,7 @@
 #
 # Node 运行时来自应用中心依赖包 nodejs_v24（manifest 已声明）
 
-APPNAME="${TRIM_APPNAME:-DSH}"
+APPNAME="${TRIM_APPNAME:-dsh}"
 
 TRIM_APPDEST="${TRIM_APPDEST:-}"
 TRIM_PKGVAR="${TRIM_PKGVAR:-}"

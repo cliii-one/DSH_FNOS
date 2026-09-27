@@ -16,7 +16,7 @@
 ```
 DSH/
 ├── appshell/            # fnOS 应用壳（打包用）
-│   ├── manifest         # 应用元数据（appname=DSH）
+│   ├── manifest         # 应用元数据（appname=dsh）
 │   ├── cmd/main         # 启停/状态控制脚本
 │   ├── config/          # privilege + resource
 │   ├── wizard/install   # 安装向导（端口等）
@@ -71,7 +71,7 @@ appcenter-cli install-fpk /tmp/DSH.fpk
 
 | 项目 | 官方 deepseek-harness | 本项目 DSH |
 |------|----------------------|-----------|
-| appname | `deepseek-harness` | `DSH` |
+| appname | `deepseek-harness` | `dsh` |
 | 接入方式 | 端口 3080（局域网裸暴露） | 统一网关 `/app/dsh`（NAS 登录鉴权） |
 | Node 运行时 | 自带 125MB 二进制 | 复用应用中心 `nodejs_v24`（包体小 90%+） |
 | 版本 | 跟随打包时点 | CI 自动跟上游最新 |
