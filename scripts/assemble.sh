@@ -35,15 +35,15 @@ echo "==> [1/4] 清理并创建组装目录"
 rm -rf "${STAGE_DIR}"
 mkdir -p "${APP_PKG}" "${APP_CONTENT}"
 
-echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/图标）"
-# 注意：ui/ 属于应用运行内容（桌面入口配置），复制到 app/ 下
+echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/ui/图标）"
+# ui/ 必须放在包根目录（与 manifest 同级）：飞牛安装器从包根读取 ui/config
+# 做桌面入口注册与目录授权。对照可正常安装的社区 fpk 证实此结构。
 cp "${REPO_ROOT}/appshell/manifest" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/cmd" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/config" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/wizard" "${APP_PKG}/"
+cp -r "${REPO_ROOT}/appshell/ui" "${APP_PKG}/"
 cp "${REPO_ROOT}/appshell/ICON.PNG" "${REPO_ROOT}/appshell/ICON_256.PNG" "${APP_PKG}/"
-# ui（桌面入口 config + 图标）是应用内容，放 app/ 下
-cp -r "${REPO_ROOT}/appshell/ui" "${APP_CONTENT}/"
 
 echo "==> [3/4] 准备运行时（使用应用中心 nodejs_v24 依赖，不打包 node 二进制）"
 # 采用 manifest install_dep_apps=nodejs_v24 声明系统依赖：
@@ -84,6 +84,46 @@ fi
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_CONTENT}/bin/runner.js"
 chmod +x "${APP_CONTENT}/bin/runner.js"
+
+# 符号链接清理（关键）：
+# CI 上 npm 安装后，node_modules/.bin 下的软链会退化成自指断链（如 dsh -> dsh）。
+# 安装器执行 ApplyPermission 递归遍历时无法解析断链目标，直接报
+# ErrCodeInstallDirAuthException(10234)「设置目录权限失败」。
+# 对照可正常安装的社区 fpk：其软链全部有效（-> ../@deepseek-ai/dsh/lib/bin.js）。
+# 处理策略：断链一律删除；有效软链实体化为真实文件，彻底规避安装器软链兼容问题。
+echo "==> 清理符号链接（断链删除 / 有效实体化）"
+BROKEN=0
+RESOLVED=0
+while IFS= read -r link; do
+    [ -z "${link}" ] && continue
+    if [ -e "${link}" ]; then
+        # 有效软链：替换为实体副本（保留目标内容与可执行位）
+        target=$(readlink -f "${link}")
+        rm -f "${link}"
+        if [ -d "${target}" ]; then
+            cp -a "${target}" "${link}"
+        else
+            cp -a "${target}" "${link}"
+        fi
+        RESOLVED=$((RESOLVED + 1))
+    else
+        # 断链：直接删除（对运行无意义，且会导致安装失败）
+        rm -f "${link}"
+        BROKEN=$((BROKEN + 1))
+    fi
+done < <(find "${APP_CONTENT}" -type l 2>/dev/null)
+echo "    实体化有效软链: ${RESOLVED} 个；删除断链: ${BROKEN} 个"
+REMAIN=$(find "${APP_CONTENT}" -type l 2>/dev/null | wc -l)
+if [ "${REMAIN}" -gt 0 ]; then
+    echo "FATAL: 仍残留 ${REMAIN} 个软链，安装器可能报权限失败" >&2
+    find "${APP_CONTENT}" -type l >&2
+    exit 1
+fi
+
+# 统一文件权限：安装器需要可读可执行（对照社区 fpk 的 755/644 规范）
+find "${APP_CONTENT}" -type d -exec chmod 755 {} + 2>/dev/null || true
+find "${APP_CONTENT}" -type f -exec chmod 644 {} + 2>/dev/null || true
+chmod -R 755 "${APP_CONTENT}/bin" 2>/dev/null || true
 
 echo "==> [4/4] 校验组装结果"
 if [ ! -d "${APP_CONTENT}/node_modules/@deepseek-ai/dsh" ]; then
