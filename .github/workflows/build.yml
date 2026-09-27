@@ -123,7 +123,8 @@ jobs:
           # 因此必须在 tgz 内剔除这些包，否则安装必然 E404。
           # 做法：解开 tgz → 从 package.json 剔除 npm 上不存在的依赖 → 重新打包。
           # 注意：GITHUB_ENV 只对后续步骤生效，本步骤内须以参数显式传路径。
-          node "$DSH_TGZ" <<'EOF'
+          # node - 从 stdin 读脚本（heredoc），tgz 路径经 argv[1] 传入。
+          node - "$DSH_TGZ" <<'EOF'
           const { execSync } = require('child_process');
           const fs = require('fs');
           const os = require('os');
