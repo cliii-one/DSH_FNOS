@@ -2,13 +2,10 @@
 
 # DSH - 飞牛 fnOS 生命周期控制脚本
 #
-# 两种运行模式（安装向导可切换）：
-#   网关模式（默认）：桥接器在 TRIM_APPDEST 下创建 dsh.sock，
-#                     由飞牛统一网关鉴权后转发，不占用任何端口
-#   端口模式（回退）  ：桥接器监听 0.0.0.0:PORT 并反代 dsh web，
-#                     适合网关不可用或需要直连端口的场景
+# 接入方式：端口模式。runner.js 监听 0.0.0.0:${SERVICE_PORT}，
+# 飞牛桌面入口（ui/config，type=iframe，port=3082）直接访问该端口。
 #
-# Node 运行时来自应用中心依赖包 nodejs_v24（manifest 已声明）
+# 运行依赖：应用中心 nodejs_v24 依赖包提供的 Node 运行时（manifest 已声明）
 
 APPNAME="${TRIM_APPNAME:-dsh}"
 
@@ -20,104 +17,71 @@ if [ -z "${TRIM_APPDEST}" ] || [ -z "${TRIM_PKGVAR}" ]; then
     exit 1
 fi
 
-# 网关模式开关：向导未配置时默认启用（官方推荐的安全方案）
-GATEWAY_ENABLED="${wizard_enable_gateway:-true}"
-
-# 端口模式参数（仅网关关闭时生效）
+# 对外服务端口（飞牛桌面入口按 manifest 的 service_port 访问）
 SERVICE_PORT="${wizard_port:-${TRIM_SERVICE_PORT:-3082}}"
+# 内部端口：dsh web 只监听回环，由 runner 代理
 INTERNAL_PORT=$((SERVICE_PORT + 1))
 PORT_PATTERN=":(${SERVICE_PORT}|${INTERNAL_PORT}) "
 
-# 系统依赖的 Node 运行时：飞牛应用中心 nodejs_v24 包
+# 系统依赖的 Node 运行时（应用中心 nodejs_v24 包）
 NODE_RUNTIME="/var/apps/nodejs_v24/target/bin/node"
-if [ ! -x "${NODE_RUNTIME}" ]; then
-    # 兜底：从 PATH 找 node（依赖包目录结构变化时不至于直接挂掉）
-    NODE_RUNTIME="$(command -v node || true)"
-fi
 
-# var 数据目录：正常由安装器创建；若缺失（手动清理后未重装），
-# 尝试创建，失败则回退到共享目录下的 var 子目录，保证应用可用
-mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
-if [ ! -d "${TRIM_PKGVAR}" ]; then
-    FALLBACK_VAR="${TRIM_DATA_SHARE_PATHS%%:*}/.appdata"
-    mkdir -p "${FALLBACK_VAR}" 2>/dev/null || true
-    if [ -d "${FALLBACK_VAR}" ]; then
-        TRIM_PKGVAR="${FALLBACK_VAR}"
-        LOG_FILE="${TRIM_PKGVAR}/${APPNAME}.log"
-        PID_FILE="${TRIM_PKGVAR}/${APPNAME}.pid"
-    fi
+# 数据目录：优先共享目录（飞牛文件管理可见、SMB 可访问），回退 var 目录
+DSH_DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+if [ -z "${DSH_DATA_DIR}" ] || [ ! -d "${DSH_DATA_DIR}" ]; then
+    DSH_DATA_DIR="${TRIM_PKGVAR}"
 fi
+mkdir -p "${DSH_DATA_DIR}" 2>/dev/null || true
 
 LOG_FILE="${TRIM_PKGVAR}/${APPNAME}.log"
 PID_FILE="${TRIM_PKGVAR}/${APPNAME}.pid"
-SOCKET_FILE="${TRIM_APPDEST}/dsh.sock"
 
 log_msg() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
 }
 
-# 日志轮转：超过 10MB 保留一份 .log.1，防止无限增长
+# 日志轮转：超过 10MB 保留一份 .log.1，避免日志无限增长
 rotate_log_if_needed() {
     [ -f "${LOG_FILE}" ] || return 0
     local size
     size=$(stat -c%s "${LOG_FILE}" 2>/dev/null || echo 0)
     if [ "${size}" -gt $((10 * 1024 * 1024)) ]; then
         mv -f "${LOG_FILE}" "${LOG_FILE}.1" 2>/dev/null || true
-        log_msg "Log rotated (${size} bytes)"
+        log_msg "日志已轮转（${size} 字节）"
     fi
 }
 rotate_log_if_needed
-
-# 校验 PID 是否为本应用进程（runner.js / @deepseek-ai/dsh 特征）
-# 防止把端口被其他应用占用时的进程误认为自己的实例
-is_our_process() {
-    local pid="$1"
-    [ -z "${pid}" ] && return 1
-    local cmdline
-    cmdline=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null)
-    case "${cmdline}" in
-        *runner.js*|*@deepseek-ai/dsh*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# PID 文件丢失/失效时，按命令行特征找回存活实例（排除脚本自身）
-runner_pids() {
-    pgrep -f "${TRIM_APPDEST}/bin/runner.js" 2>/dev/null | grep -vx "$$" | head -n 1
-}
 
 instance_alive() {
     local pid="$1"
     [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
 }
 
-# 端口模式：查端口占用者
-port_owner_pid() {
-    local owner
-    owner=$(netstat -tlnp 2>/dev/null | grep -E "${PORT_PATTERN}" | sed -n 's/.*[[:space:]]\([0-9]\+\)\/[A-Za-z0-9_+.-]*[[:space:]]*$/\1/p' | sort -un | head -n 1)
-    [ -n "${owner}" ] && echo "${owner}"
+# 按命令行特征找回存活实例（PID 文件丢失或失效时的兜底），排除脚本自身
+runner_pid() {
+    pgrep -f "${TRIM_APPDEST}/bin/runner.js" 2>/dev/null | grep -vx "$$" | head -n 1
 }
 
 recover_running_instance() {
     local pid
-    pid=$(runner_pids)
+    pid=$(runner_pid)
     if instance_alive "${pid}"; then
         printf "%s" "${pid}" > "${PID_FILE}"
-        log_msg "Recovered running instance PID ${pid} (PID file was missing/stale)"
+        log_msg "已找回运行中的实例 PID ${pid}"
         return 0
     fi
     return 1
 }
 
-# 启动前置检查：node 运行时与 DSH 本体
+# 启动前检查：Node 运行时与 DSH 本体是否就绪
 preflight_check() {
-    if [ -z "${NODE_RUNTIME}" ] || [ ! -x "${NODE_RUNTIME}" ]; then
-        log_msg "ERROR: node runtime not found (nodejs_v24)"
+    if [ ! -x "${NODE_RUNTIME}" ]; then
+        log_msg "ERROR: 未找到 Node 运行时 ${NODE_RUNTIME}"
         echo "✗ 未找到 Node.js 运行时，请确认应用中心已安装 nodejs_v24" > "${TRIM_TEMP_LOGFILE}" 2>/dev/null || true
         return 1
     fi
-    if [ ! -d "${TRIM_APPDEST}/node_modules/@deepseek-ai/dsh" ]; then
-        log_msg "ERROR: DSH core missing"
+    if [ ! -f "${TRIM_APPDEST}/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
+        log_msg "ERROR: DSH 本体缺失"
         echo "✗ DSH 本体缺失，安装包不完整，请重新下载安装。" > "${TRIM_TEMP_LOGFILE}" 2>/dev/null || true
         return 1
     fi
@@ -125,14 +89,14 @@ preflight_check() {
 }
 
 start_process() {
-    log_msg "Starting ${APPNAME} (mode: gateway=${GATEWAY_ENABLED}, port=${SERVICE_PORT})..."
+    log_msg "正在启动 ${APPNAME}（端口 ${SERVICE_PORT}）..."
 
-    # 已在运行则直接返回：优先读 PID 文件，失效时按特征兜底找回
+    # 已在运行则直接返回
     if [ -f "${PID_FILE}" ]; then
         local old_pid
         old_pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
         if instance_alive "${old_pid}"; then
-            log_msg "${APPNAME} already running with PID ${old_pid}"
+            log_msg "${APPNAME} 已在运行，PID ${old_pid}"
             return 0
         fi
         rm -f "${PID_FILE}"
@@ -143,72 +107,39 @@ start_process() {
 
     preflight_check || return 1
 
-    # 网关模式：sock 残留（上次异常退出留下的死 sock）直接重建
-    if [ "${GATEWAY_ENABLED}" = "true" ] && [ -S "${SOCKET_FILE}" ]; then
-        log_msg "Stale socket found, removing: ${SOCKET_FILE}"
-        rm -f "${SOCKET_FILE}"
-    fi
-
-    # 端口模式：确认端口未被占用（区分本应用实例与其他应用）
-    if [ "${GATEWAY_ENABLED}" != "true" ]; then
-        local bound_pid
-        bound_pid=$(port_owner_pid)
-        if instance_alive "${bound_pid}"; then
-            if is_our_process "${bound_pid}"; then
-                log_msg "Port held by our instance PID ${bound_pid}, treating as running"
-                printf "%s" "${bound_pid}" > "${PID_FILE}"
-                return 0
-            else
-                log_msg "ERROR: port held by foreign process PID ${bound_pid}"
-                echo "✗ 端口 ${SERVICE_PORT} 已被其他应用 (PID ${bound_pid}) 占用，请更换端口或启用统一网关" >&2
-                return 1
-            fi
-        fi
+    # 对外端口被占用则明确报错（提示用户更换端口）
+    if netstat -tln 2>/dev/null | grep -qE "${PORT_PATTERN}"; then
+        log_msg "ERROR: 端口 ${SERVICE_PORT}/${INTERNAL_PORT} 已被占用"
+        echo "✗ 端口 ${SERVICE_PORT} 已被占用，请在应用设置中更换端口" > "${TRIM_TEMP_LOGFILE}" 2>/dev/null || true
+        return 1
     fi
 
     export PATH="$(dirname "${NODE_RUNTIME}"):${PATH}"
-    # DSH 数据根目录：优先共享目录（@appshare/dsh，飞牛文件管理可见/SMB 可访问），
-    # 不可用时回退 var 目录
-    DSH_DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
-    if [ -z "${DSH_DATA_DIR}" ] || [ ! -d "${DSH_DATA_DIR}" ]; then
-        DSH_DATA_DIR="${TRIM_PKGVAR}"
-    fi
-    mkdir -p "${DSH_DATA_DIR}" 2>/dev/null || true
     export HOME="${DSH_DATA_DIR}"
-    # 关键：必须显式设置 DSH_HOME。dsh 的 home 解析优先级为
+    # 必须显式设置 DSH_HOME：dsh 的 home 解析优先级为
     #   显式配置 > $DSH_HOME > os.homedir()/.dsh
-    # 而 os.homedir() 读的是 passwd 中的家目录（/home/dsh），不认 $HOME 变量。
-    # 不设置会导致 dsh 把配置/凭据写到 /home/dsh/.dsh，桥接器预置的
-    # browser-session 密钥不被读取，前端认证 401。
-    # 注意语义：DSH_HOME 指向 .dsh 目录本身（不是其父目录）。
+    # 而 os.homedir() 取 passwd 中的家目录（/home/dsh），不认 $HOME。
+    # 不设置会使 dsh 把配置与凭据写到 /home/dsh/.dsh，
+    # 导致 runner 预置的认证密钥不被读取、前端认证失败。
+    # 注意：DSH_HOME 指向 .dsh 目录本身。
     export DSH_HOME="${DSH_DATA_DIR}/.dsh"
+    export PORT="${SERVICE_PORT}"
+    export DSH_PORT="${INTERNAL_PORT}"
     export TRIM_APPDEST="${TRIM_APPDEST}"
     export TRIM_PKGVAR="${TRIM_PKGVAR}"
 
-    cd "${TRIM_PKGVAR}" || return 1
+    cd "${DSH_DATA_DIR}" || return 1
 
-    if [ "${GATEWAY_ENABLED}" = "true" ]; then
-        # 网关模式：runner.js 启动 dsh web（仅 127.0.0.1）+ 在 TRIM_APPDEST 创建 dsh.sock
-        export GATEWAY_SOCKET="dsh.sock"
-        # 内部端口避开官方 deepseek-harness 的 3081
-        export DSH_PORT="${DSH_PORT:-3083}"
-        "${NODE_RUNTIME}" "${TRIM_APPDEST}/bin/runner.js" >> "${LOG_FILE}" 2>&1 &
-    else
-        # 端口模式：runner.js 额外监听 0.0.0.0:PORT 对局域网服务
-        export PORT="${SERVICE_PORT}"
-        export DSH_PORT="${INTERNAL_PORT}"
-        export DSH_FALLBACK_PORT="1"
-        "${NODE_RUNTIME}" "${TRIM_APPDEST}/bin/runner.js" >> "${LOG_FILE}" 2>&1 &
-    fi
+    "${NODE_RUNTIME}" "${TRIM_APPDEST}/bin/runner.js" >> "${LOG_FILE}" 2>&1 &
     local new_pid=$!
     printf "%s" "${new_pid}" > "${PID_FILE}"
-    log_msg "Started with PID: ${new_pid}"
+    log_msg "已启动，PID ${new_pid}"
 
     # 探测 10 秒：若进程秒退则如实报错，避免误报启动成功
     local count=0
     while [ ${count} -lt 10 ]; do
         if ! kill -0 "${new_pid}" 2>/dev/null; then
-            log_msg "Failed to start or process exited early (after ${count}s)"
+            log_msg "启动失败：进程在 ${count} 秒内退出"
             rm -f "${PID_FILE}"
             return 1
         fi
@@ -219,14 +150,13 @@ start_process() {
 }
 
 stop_process() {
-    log_msg "Stopping ${APPNAME}..."
+    log_msg "正在停止 ${APPNAME}..."
 
-    # 先向 PID 文件记录的进程发 TERM（runner.js 会联动回收 dsh 子进程）
+    # 先发 TERM 让 runner 优雅回收 dsh 子进程
     if [ -f "${PID_FILE}" ]; then
         local pid
         pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
-        if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
-            log_msg "Sending TERM to PID ${pid}"
+        if instance_alive "${pid}"; then
             kill -TERM "${pid}" 2>/dev/null || true
             local count=0
             while kill -0 "${pid}" 2>/dev/null && [ $count -lt 5 ]; do
@@ -234,35 +164,33 @@ stop_process() {
                 count=$((count + 1))
             done
             if kill -0 "${pid}" 2>/dev/null; then
-                log_msg "Force killing PID ${pid}"
+                log_msg "强制结束 PID ${pid}"
                 kill -KILL "${pid}" 2>/dev/null || true
             fi
         fi
     fi
 
-    # 清理残留的 runner / dsh 子进程；模式带路径限定，避免误杀无关进程
+    # 清理残留的 runner / dsh 进程（路径限定，避免误杀无关进程）
     local cleanup_pids
-    cleanup_pids=$(pgrep -f "bin/runner\.js" 2>/dev/null; pgrep -f "@deepseek-ai/dsh.*bin\.js web" 2>/dev/null)
+    cleanup_pids=$(
+        pgrep -f "${TRIM_APPDEST}/bin/runner\.js" 2>/dev/null
+        pgrep -f "${TRIM_APPDEST}/node_modules/@deepseek-ai/dsh.*bin\.js web" 2>/dev/null
+    )
     for pid in $(echo "${cleanup_pids}" | sort -un); do
         [ -z "${pid}" ] && continue
         [ "${pid}" = "$$" ] && continue
         kill -9 "${pid}" 2>/dev/null || true
     done
 
-    # 网关模式：确认 socket 已清理
-    rm -f "${SOCKET_FILE}" 2>/dev/null || true
-
-    # 端口模式：确认端口已释放，否则如实报告失败
-    if [ "${GATEWAY_ENABLED}" != "true" ]; then
-        sleep 1
-        if ss -tln 2>/dev/null | grep -qE "${PORT_PATTERN}"; then
-            log_msg "ERROR: port still bound after stop"
-            rm -f "${PID_FILE}" 2>/dev/null || true
-            return 1
-        fi
+    # 确认端口已释放，否则如实报告失败
+    sleep 1
+    if ss -tln 2>/dev/null | grep -qE "${PORT_PATTERN}"; then
+        log_msg "ERROR: 停止后端口仍被占用"
+        rm -f "${PID_FILE}" 2>/dev/null || true
+        return 1
     fi
     rm -f "${PID_FILE}" 2>/dev/null || true
-    log_msg "Stopped successfully"
+    log_msg "已停止"
     return 0
 }
 

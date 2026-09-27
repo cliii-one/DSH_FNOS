@@ -4,10 +4,9 @@
       "title": "DSH",
       "icon": "images/icon_{0}.png",
       "type": "iframe",
-      "protocol": "",
-      "gatewayPrefix": "/app/dsh",
-      "gatewaySocket": "dsh.sock",
-      "url": "/app/dsh",
+      "protocol": "http",
+      "port": "3082",
+      "url": "/",
       "allUsers": true
     }
   }

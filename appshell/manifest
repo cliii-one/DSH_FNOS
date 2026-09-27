@@ -1,7 +1,7 @@
 appname               = dsh
 version               = 0.1.0
 display_name          = DSH
-desc                  = DeepSeek Harness 飞牛NAS社区版 - AI开发助手，通过GitHub Actions自动跟进上游最新版本构建。采用飞牛统一网关接入，无需占用端口，登录NAS即可安全访问。
+desc                  = DeepSeek Harness 飞牛NAS社区版 - AI 开发助手，通过 GitHub Actions 自动跟进上游最新版本构建，端口模式接入，飞牛桌面一键打开。
 platform              = all
 source                = thirdparty
 maintainer            = dsh-fnos
@@ -11,6 +11,7 @@ distributor_url       = https://github.com/deepseek-ai/deepseek-harness
 desktop_uidir         = ui
 desktop_applaunchname = dsh.Application
 install_dep_apps      = nodejs_v24
+service_port          = 3082
 checkport             = false
 ctl_stop              = true
 wizard_dir            = wizard

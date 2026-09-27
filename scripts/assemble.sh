@@ -37,9 +37,9 @@ mkdir -p "${APP_PKG}" "${APP_CONTENT}"
 
 echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/ui/图标）"
 # ui/ 需要同时存在于两处（对照可正常安装的社区 fpk）：
-#   ① 包根 ui/      → 安装器读取桌面入口配置（gatewayPrefix 等）
-#   ② app/ui/       → fnpack 打包 app.tgz 时要求该路径存在，
-#                     缺失会直接报 "stat app/ui: no such file or directory" 打包失败
+#   ① 包根 ui/ → 安装器读取桌面入口配置（ui/config 的 port 等）
+#   ② app/ui/  → fnpack 打包 app.tgz 时要求该路径存在，
+#                缺失会报 "stat app/ui: no such file or directory" 导致打包失败
 cp "${REPO_ROOT}/appshell/manifest" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/cmd" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/config" "${APP_PKG}/"
