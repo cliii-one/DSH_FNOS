@@ -2,10 +2,7 @@
   "data-share": {
     "shares": [
       {
-        "name": "dsh",
-        "permission": {
-          "rw": ["DSH"]
-        }
+        "name": "dsh"
       }
     ]
   }
