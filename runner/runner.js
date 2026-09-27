@@ -216,8 +216,9 @@ function proxyRequest(req, res) {
         const outHeaders = { ...upRes.headers };
         delete outHeaders['set-cookie'];
         const ct = upRes.headers['content-type'] || '';
-        const shouldRewrite = ct.includes('text/html') || ct.includes('javascript') || ct.includes('css');
-        if (!shouldRewrite) {
+        const isHtml = ct.includes('text/html');
+        const isText = isHtml || ct.includes('javascript') || ct.includes('css');
+        if (!isText) {
             res.writeHead(upRes.statusCode, outHeaders);
             upRes.pipe(res);
             return;
@@ -226,7 +227,17 @@ function proxyRequest(req, res) {
         upRes.on('data', (c) => chunks.push(c));
         upRes.on('end', () => {
             let body = Buffer.concat(chunks.map(Buffer.from)).toString('utf-8');
-            body = restoreGatewayPrefix(body) + POLYFILL;
+            // 前缀回写（仅处理文本类响应）
+            body = restoreGatewayPrefix(body);
+            // polyfill 只注入 HTML，且必须包在 <script> 里：
+            //   ① 直接拼裸 JS 会被浏览器当正文渲染出来
+            //   ② 注入 JS/CSS 会破坏样式与脚本语法
+            if (isHtml) {
+                const tag = `<script>${POLYFILL}</script>`;
+                body = body.includes('</body>')
+                    ? body.replace('</body>', `${tag}</body>`)
+                    : body + tag;
+            }
             const out = Buffer.from(body, 'utf-8');
             outHeaders['content-length'] = out.length;
             delete outHeaders['content-encoding'];
