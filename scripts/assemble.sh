@@ -134,7 +134,7 @@ mkdir -p "${UPDATER_DEST}"
 cp -r "${REPO_ROOT}/plugin/lib" "${UPDATER_DEST}/"
 cp -r "${REPO_ROOT}/plugin/client" "${UPDATER_DEST}/"
 cp "${REPO_ROOT}/plugin/package.json" "${REPO_ROOT}/plugin/cordis.patch.yml" "${UPDATER_DEST}/"
-[ -f "${UPDATER_DEST}/lib/install.mjs" ] || { echo "FATAL: 更新插件缺少 install.mjs" >&2; exit 1; }
+[ -f "${UPDATER_DEST}/lib/index.js" ] || { echo "FATAL: 更新插件缺少 lib/index.js" >&2; exit 1; }
 
 # 符号链接清理（关键）：
 # 飞牛安装器的 ApplyPermission 会递归遍历包内文件，遇到无法解析的软链

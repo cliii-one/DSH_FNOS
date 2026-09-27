@@ -164,7 +164,8 @@ jobs:
           curl -sfL --retry 3 -o /tmp/fnpack "${FNPACK_URL}"
           chmod +x /tmp/fnpack
           sudo mv /tmp/fnpack /usr/local/bin/fnpack
-          fnpack --version || true
+          # fnpack 1.2.1 不支持 --version（报 unknown flag），不做版本探测；
+          # 工具可用性由后续 fnpack build 步骤验证。
 
       - name: 组装 fnOS 应用目录
         if: steps.check.outputs.skip != 'true'
