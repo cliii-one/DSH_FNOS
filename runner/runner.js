@@ -20,6 +20,7 @@
  */
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
@@ -67,26 +68,16 @@ const DSH_BIN = path.join(APP_DIR, 'node_modules', '@deepseek-ai', 'dsh', 'lib',
 try { process.umask(0); } catch (e) {}
 
 function startDsh() {
-    // dsh web 启动时会打印一次性访问 token（http://127.0.0.1:PORT/?token=xxx），
-    // 网关过来的请求没有这个 token 会被 DSH 拒绝（Not Found）。
-    // 这里接管 stdout，捕获 token 供转发时自动附加
+    // 启动前预置 browser-session 凭据：dsh 启动时读取 .credentials.yaml，
+    // 桥接器据此自签认证 cookie（无需 token/303 流程）
+    ensureBrowserSessionSecret();
+
     const dsh = spawn(NODE_BIN, [DSH_BIN, 'web', '--port', String(DSH_PORT), '--no-open'], {
         // HOME 继承 cmd/main 设置的值（@appshare/dsh），.dsh 落在共享目录
         env: { ...process.env },
         cwd: VAR_DIR,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', 'inherit', 'inherit'],
     });
-    const collectToken = (chunk) => {
-        const text = chunk.toString();
-        process.stdout.write('[dsh] ' + text);
-        const m = text.match(/token=([A-Za-z0-9_-]+)/);
-        if (m && !process.env.DSH_AUTH_TOKEN) {
-            process.env.DSH_AUTH_TOKEN = m[1];
-            console.log('[Bridge] 已捕获 dsh 访问 token，转发请求将自动携带');
-        }
-    };
-    dsh.stdout.on('data', collectToken);
-    dsh.stderr.on('data', collectToken);
 
     dsh.on('exit', (code) => {
         console.log(`[Bridge] dsh web exited (${code}), bridge exits too`);
@@ -101,161 +92,143 @@ function startDsh() {
 // 注入 polyfill：修复部分浏览器在特定上下文缺少 crypto.randomUUID 的问题
 const POLYFILL = ';if(typeof crypto!=="undefined"&&!crypto.randomUUID){crypto.randomUUID=function(){return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==="x"?r:(Math.random()*0x3|0x8);return v.toString(16);});}};';
 
-// ---------- 认证代理 ----------
+// ---------- 认证：自签 browser-session cookie ----------
 //
-// 实测结论：dsh 的认证是「token 换 cookie」模式 —— 带 token 的请求永远返回
-// 303 + Set-Cookie，浏览器跟随重定向后凭 cookie 访问。但 dsh 对 Unix socket
-// 进来的请求不认可 cookie（同 cookie 经 TCP 200、经 socket 303，实测）。
-// 若每次转发都注入 token，浏览器会陷入 303 循环（这正是"Not Found"的根源之一）。
-//
-// 解法：认证完全由桥接器代理 ——
-//   1. 桥接器持有内存 cookie，首次（或失效时）用 token 换取
-//   2. 转发请求时附带 cookie；若 dsh 仍返回 303，则在服务器端跟随重定向
-//      （最多 5 跳），把最终内容直接返回浏览器
-//   3. 浏览器全程不需要 token/cookie，只看到 200
+// 原理（参考 deepseek-harness-fpk 社区实现并实测验证）：
+// dsh 的浏览器认证 cookie 由 .dsh/.credentials.yaml 中
+// client-connection/browser-session 的 secret 以 HMAC-SHA256 签发，
+// cookie 名 = "dsh-auth-" + base64url(sha256(authority))。
+// 桥接器预置该 secret 后即可自行签发有效 cookie，
+// 无需 token / 303 重定向流程（此前 Not Found 的根源）。
 
-const COOKIE_JAR = { value: null }; // dsh-auth-* cookie 值
-
-function dshRequest(reqPath, extraHeaders = {}) {
-    return new Promise((resolve, reject) => {
-        const headers = {
-            host: `127.0.0.1:${DSH_PORT}`,
-            accept: '*/*',
-            ...extraHeaders,
-        };
-        if (COOKIE_JAR.value) headers.cookie = COOKIE_JAR.value;
-        const up = http.request({
-            hostname: '127.0.0.1',
-            port: DSH_PORT,
-            path: reqPath,
-            headers,
-        }, resolve);
-        up.on('error', reject);
-        up.end();
-    });
+function encodeBase64Url(value) {
+    return Buffer.from(value).toString('base64').replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+function decodeBase64Url(value) {
+    const padding = '='.repeat((4 - value.length % 4) % 4);
+    return Buffer.from(value.replaceAll('-', '+').replaceAll('_', '/') + padding, 'base64');
 }
 
-// 用 token 换取 cookie（服务器端完成，浏览器无感知）。
-// 注意：带 token 的请求 dsh 永远响应 303+新 cookie，因此 token 只在此处用一次，
-// 日常转发绝不能携带，否则陷入 303 循环。
-async function ensureCookie(force = false) {
-    if (COOKIE_JAR.value && !force) return;
-    const token = process.env.DSH_AUTH_TOKEN;
-    if (!token) return;
-    const res = await new Promise((resolve, reject) => {
-        const up = http.request({
-            hostname: '127.0.0.1',
-            port: DSH_PORT,
-            path: '/?token=' + token,
-            headers: { host: `127.0.0.1:${DSH_PORT}`, accept: '*/*' },
-        }, resolve);
-        up.on('error', reject);
-        up.end();
-    });
-    const setCookie = res.headers['set-cookie'];
-    if (setCookie && setCookie.length) {
-        COOKIE_JAR.value = setCookie.map((c) => c.split(';')[0]).join('; ');
-        console.log('[Bridge] 已通过 token 换取会话 cookie');
-    }
-}
-
-// 服务器端跟随 303 重定向，返回最终非 3xx 响应。
-// 若 cookie 失效（dsh 继续发 303），强制用 token 重换 cookie 后重试。
-async function followAndResolve(reqPath, maxHops = 5) {
-    let path = reqPath;
-    let refreshed = false;
-    for (let i = 0; i < maxHops; i++) {
-        const res = await dshRequest(path);
-        const isRedirect = [301, 302, 303, 307].includes(res.statusCode) && res.headers.location;
-        if (!isRedirect) return res;
-
-        // 记录 dsh 重新签发的 cookie
-        const sc = res.headers['set-cookie'];
-        if (sc && sc.length) COOKIE_JAR.value = sc.map((c) => c.split(';')[0]).join('; ');
-
-        // 首次 303 说明签发时 cookie 未生效：强制用 token 重换一次
-        if (!refreshed) {
-            refreshed = true;
-            await ensureCookie(true);
-            continue; // 用新 cookie 重放当前 path（不带 token）
+// 确保 credentials.yaml 中存在 browser-session secret（无则生成并预置）
+function ensureBrowserSessionSecret() {
+    const credPath = path.join(process.env.HOME || VAR_DIR, '.dsh', '.credentials.yaml');
+    const secretVar = 'client-connection/browser-session';
+    try {
+        if (fs.existsSync(credPath)) {
+            const content = fs.readFileSync(credPath, 'utf-8');
+            const m = content.match(new RegExp(secretVar.replace('/', '\\/') + ':[^\\n]*\\n\\s*kind:\\s*grant\\s*\\n\\s*payload:\\s*\\n\\s*version:\\s*1\\s*\\n\\s*secret:\\s*([A-Za-z0-9_-]+)'));
+            if (m) return decodeBase64Url(m[1]);
         }
-
-        const loc = res.headers.location;
-        if (loc.startsWith('/')) path = loc;
-        else if (loc.startsWith('.')) {
-            const base = path.split('?')[0].replace(/\/[^/]*$/, '');
-            path = base + '/' + loc.replace(/^\.\//, '');
+        // 生成新 secret 并写入
+        const secret = crypto.randomBytes(32);
+        const secretStr = encodeBase64Url(secret);
+        const record = `records:\n  ${secretVar}:\n    kind: grant\n    payload:\n      version: 1\n      secret: ${secretStr}\n`;
+        fs.mkdirSync(path.dirname(credPath), { recursive: true, mode: 0o700 });
+        if (fs.existsSync(credPath)) {
+            let content = fs.readFileSync(credPath, 'utf-8');
+            if (/^records:\s*$/m.test(content)) {
+                content = content.replace(/^records:\s*$/m, `records:\n  ${secretVar}:\n    kind: grant\n    payload:\n      version: 1\n      secret: ${secretStr}`);
+                fs.writeFileSync(credPath, content, { mode: 0o600 });
+            } else {
+                fs.appendFileSync(credPath, `\n${record}`, { mode: 0o600 });
+            }
         } else {
-            path = loc;
+            fs.writeFileSync(credPath, `version: 1\n${record}`, { mode: 0o600 });
         }
+        console.log('[Bridge] 已预置 browser-session 认证密钥');
+        return secret;
+    } catch (e) {
+        console.warn('[Bridge] 预置认证密钥失败:', e.message);
+        return null;
     }
-    throw new Error('重定向次数超限');
 }
+
+// 用预置 secret 自签认证 cookie（缓存 12 小时）
+let cachedAuthCookie = null;
+let lastCookieGenTime = 0;
+function getAuthCookie() {
+    const now = Date.now();
+    if (cachedAuthCookie && now - lastCookieGenTime < 12 * 3600 * 1000) return cachedAuthCookie;
+    const secret = ensureBrowserSessionSecret();
+    if (!secret) return '';
+    const authority = `127.0.0.1:${DSH_PORT}`;
+    const cookieName = 'dsh-auth-' + encodeBase64Url(crypto.createHash('sha256').update(authority).digest());
+    const payload = { version: 1, authority, issuedAt: now, expiresAt: now + 30 * 24 * 3600 * 1000 };
+    const body = encodeBase64Url(Buffer.from(JSON.stringify(payload), 'utf8'));
+    const sig = crypto.createHmac('sha256', secret).update(body).digest();
+    cachedAuthCookie = `${cookieName}=${body ? `v1.${body}.${encodeBase64Url(sig)}` : ''}`;
+    lastCookieGenTime = now;
+    return cachedAuthCookie;
+}
+
+// 请求转发头：合并用户 cookie 与自签 cookie，对齐 Origin/Referer 防 CSRF 403
+function buildUpstreamHeaders(req) {
+    const authCookie = getAuthCookie();
+    const incomingCookie = req.headers['cookie'] || '';
+    const merged = authCookie
+        ? (incomingCookie ? `${incomingCookie}; ${authCookie}` : authCookie)
+        : incomingCookie;
+    const headers = {
+        ...req.headers,
+        'x-forwarded-for': req.socket.remoteAddress,
+        'x-forwarded-proto': 'http',
+        'x-forwarded-host': req.headers.host || `${DSH_PORT}`,
+        host: `127.0.0.1:${DSH_PORT}`,
+        cookie: merged,
+    };
+    if (req.headers.origin) headers.origin = `http://127.0.0.1:${DSH_PORT}`;
+    if (req.headers.referer) headers.referer = `http://127.0.0.1:${DSH_PORT}/`;
+    if (headers['sec-fetch-site'] === 'cross-site') headers['sec-fetch-site'] = 'same-origin';
+    // 文本类请求关压缩，便于统一改写
+    if (req.url === '/' || !req.url.includes('.')) delete headers['accept-encoding'];
+    return headers;
+}
+
+// ---------- 请求转发（自签 cookie 认证） ----------
 
 function proxyRequest(req, res) {
-    (async () => {
-        try {
-            // 剥离网关前缀：/app/dsh/xxx -> /xxx（dsh 按根路径服务）
-            const reqPath = stripGatewayPrefix(req.url);
-            await ensureCookie();
+    // 剥离网关前缀：/app/dsh/xxx -> /xxx（dsh 按根路径服务）
+    const reqPath = stripGatewayPrefix(req.url);
+    const headers = buildUpstreamHeaders(req);
 
-            // GET/HEAD 走"跟随重定向"通道；其他方法（POST 等）直接转发
-            // 认证统一由桥接器的 cookie 完成，所有请求均不携带 token
-            let upRes;
-            if (req.method === 'GET' || req.method === 'HEAD') {
-                upRes = await followAndResolve(reqPath);
-            } else {
-                upRes = await new Promise((resolve, reject) => {
-                    const headers = {
-                        ...req.headers,
-                        host: `127.0.0.1:${DSH_PORT}`,
-                    };
-                    if (COOKIE_JAR.value) headers.cookie = COOKIE_JAR.value;
-                    const up = http.request({
-                        hostname: '127.0.0.1',
-                        port: DSH_PORT,
-                        path: reqPath,
-                        method: req.method,
-                        headers,
-                    }, resolve);
-                    up.on('error', reject);
-                    req.pipe(up);
-                });
-                const sc = upRes.headers['set-cookie'];
-                if (sc && sc.length) COOKIE_JAR.value = sc.map((c) => c.split(';')[0]).join('; ');
-            }
-
-            const ct = upRes.headers['content-type'] || '';
-            const shouldRewrite = ct.includes('text/html') || ct.includes('javascript') || ct.includes('css');
-            const outHeaders = { ...upRes.headers };
-            // 浏览器不需要 dsh 的 cookie/认证相关头（认证由桥接器代理）
-            delete outHeaders['set-cookie'];
-
-            if (!shouldRewrite) {
-                res.writeHead(upRes.statusCode, outHeaders);
-                upRes.pipe(res);
-                return;
-            }
-            const chunks = [];
-            upRes.on('data', (c) => chunks.push(c));
-            upRes.on('end', () => {
-                let body = Buffer.concat(chunks.map(Buffer.from)).toString('utf-8');
-                body = restoreGatewayPrefix(body) + POLYFILL;
-                const out = Buffer.from(body, 'utf-8');
-                outHeaders['content-length'] = out.length;
-                delete outHeaders['content-encoding'];
-                delete outHeaders['transfer-encoding'];
-                res.writeHead(upRes.statusCode, outHeaders);
-                res.end(out);
-            });
-        } catch (err) {
-            console.error('[Bridge] 转发失败:', err.message);
-            res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('DSH 尚未就绪，请稍后刷新重试\n');
+    const upstream = http.request({
+        hostname: '127.0.0.1',
+        port: DSH_PORT,
+        path: reqPath,
+        method: req.method,
+        headers,
+    }, (upRes) => {
+        // dsh 下发的 set-cookie 已由自签 cookie 覆盖认证，不透传给浏览器
+        const outHeaders = { ...upRes.headers };
+        delete outHeaders['set-cookie'];
+        const ct = upRes.headers['content-type'] || '';
+        const shouldRewrite = ct.includes('text/html') || ct.includes('javascript') || ct.includes('css');
+        if (!shouldRewrite) {
+            res.writeHead(upRes.statusCode, outHeaders);
+            upRes.pipe(res);
+            return;
         }
-    })();
+        const chunks = [];
+        upRes.on('data', (c) => chunks.push(c));
+        upRes.on('end', () => {
+            let body = Buffer.concat(chunks.map(Buffer.from)).toString('utf-8');
+            body = restoreGatewayPrefix(body) + POLYFILL;
+            const out = Buffer.from(body, 'utf-8');
+            outHeaders['content-length'] = out.length;
+            delete outHeaders['content-encoding'];
+            delete outHeaders['transfer-encoding'];
+            res.writeHead(upRes.statusCode, outHeaders);
+            res.end(out);
+        });
+    });
+    req.pipe(upstream);
+    upstream.on('error', () => {
+        res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('DSH 尚未就绪，请稍后刷新重试\n');
+    });
 }
 
+// ---------- 网关前缀剥离与回写 ----------
 // ---------- 回退端口模式：局域网 TCP 监听（仅网关关闭时启用） ----------
 
 function startFallbackProxy() {
@@ -275,8 +248,7 @@ function startFallbackProxy() {
                 if (lname === 'host') continue; // host 由 CONNECT 目标决定
                 lines.push(`${name}: ${req.rawHeaders[i + 1]}`);
             }
-            if (COOKIE_JAR.value) lines.push(`Cookie: ${COOKIE_JAR.value}`);
-            if (!hasCookie && COOKIE_JAR.value) { /* 已注入 */ }
+            if (getAuthCookie()) lines.push(`Cookie: ${getAuthCookie()}`);
             upstream.write(lines.join('\r\n') + '\r\n\r\n');
             if (head && head.length) upstream.write(head);
             upstream.pipe(socket);
@@ -306,8 +278,7 @@ function startBridge() {
         const upUrl = stripGatewayPrefix(req.url);
         // Cookie 由桥接器接管：丢弃浏览器 cookie，注入桥接器持有的会话 cookie
         const upHeaders = { ...req.headers, host: `127.0.0.1:${DSH_PORT}` };
-        delete upHeaders.cookie;
-        if (COOKIE_JAR.value) upHeaders.cookie = COOKIE_JAR.value;
+        if (getAuthCookie()) upHeaders.cookie = getAuthCookie();
         const upstream = http.request({
             hostname: '127.0.0.1',
             port: DSH_PORT,
