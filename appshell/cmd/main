@@ -89,6 +89,34 @@ preflight_check() {
     return 0
 }
 
+# 在 profile 的用户补丁层启用侧边栏浏览器标签。
+# 已含该条目则跳过，保证幂等；否则按现有内容形态插入条目。
+enable_sidebar_browser() {
+    local patch_file="${DSH_HOME}/profiles/web/cordis.patch.yml"
+    local entry='- id: ui-sidebar-browser
+  disabled: false'
+
+    if [ -f "${patch_file}" ] && grep -q "ui-sidebar-browser" "${patch_file}" 2>/dev/null; then
+        return 0
+    fi
+    mkdir -p "$(dirname "${patch_file}")" 2>/dev/null || true
+
+    if [ ! -f "${patch_file}" ]; then
+        # 文件尚不存在：直接写入补丁层
+        printf '%s\n' "${entry}" > "${patch_file}"
+    elif grep -qE '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "${patch_file}"; then
+        # 文件是 dsh 生成的空模板（顶层为空数组 []）：
+        # 直接把该行替换为条目，避免出现两个 YAML 根节点
+        local body
+        body=$(grep -vE '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "${patch_file}")
+        printf '%s\n\n%s\n' "${body}" "${entry}" > "${patch_file}"
+    else
+        # 文件已有其他补丁条目：追加即可
+        printf '\n%s\n' "${entry}" >> "${patch_file}"
+    fi
+    log_msg "已写入 profile 补丁：启用侧边栏浏览器标签"
+}
+
 start_process() {
     log_msg "正在启动 ${APPNAME}（端口 ${SERVICE_PORT}）..."
 
@@ -135,6 +163,13 @@ start_process() {
     # 飞牛为应用创建的用户登录 shell 是 /usr/sbin/nologin（所有应用用户皆如此），
     # 不指定会让侧边栏终端直接退出并提示 "This account is currently not available."。
     export SHELL="/bin/bash"
+    # 启用 Web 模式下默认关闭的侧边栏浏览器标签。
+    # dsh 的 web-app bundle 中该插件带 disabled 条件（仅 desktop profile 开启），
+    # 但其实现同时支持 iframe（Web）与 webview（桌面）两种载体。
+    # profile 的用户补丁层 cordis.patch.yml 会在 bundle 之后应用，
+    # 以 id 匹配覆盖 disabled 即可启用。
+    # 注意：dsh 只在文件不存在时写入模板，故已存在的补丁不会被覆盖。
+    enable_sidebar_browser
     export PORT="${SERVICE_PORT}"
     export DSH_PORT="${INTERNAL_PORT}"
     export TRIM_APPDEST="${TRIM_APPDEST}"
