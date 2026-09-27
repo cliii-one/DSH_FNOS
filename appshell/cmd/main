@@ -167,15 +167,21 @@ start_process() {
     fi
 
     export PATH="$(dirname "${NODE_RUNTIME}"):${PATH}"
-    # HOME 决定 DSH 的 .dsh 配置/凭据/插件 profile 位置。
-    # 优先用数据共享目录（@appshare/dsh，飞牛文件管理可直接访问、SMB 可见），
+    # DSH 数据根目录：优先共享目录（@appshare/dsh，飞牛文件管理可见/SMB 可访问），
     # 不可用时回退 var 目录
-    DSH_HOME="${TRIM_DATA_SHARE_PATHS%%:*}"
-    if [ -z "${DSH_HOME}" ] || [ ! -d "${DSH_HOME}" ]; then
-        DSH_HOME="${TRIM_PKGVAR}"
+    DSH_DATA_DIR="${TRIM_DATA_SHARE_PATHS%%:*}"
+    if [ -z "${DSH_DATA_DIR}" ] || [ ! -d "${DSH_DATA_DIR}" ]; then
+        DSH_DATA_DIR="${TRIM_PKGVAR}"
     fi
-    mkdir -p "${DSH_HOME}" 2>/dev/null || true
-    export HOME="${DSH_HOME}"
+    mkdir -p "${DSH_DATA_DIR}" 2>/dev/null || true
+    export HOME="${DSH_DATA_DIR}"
+    # 关键：必须显式设置 DSH_HOME。dsh 的 home 解析优先级为
+    #   显式配置 > $DSH_HOME > os.homedir()/.dsh
+    # 而 os.homedir() 读的是 passwd 中的家目录（/home/dsh），不认 $HOME 变量。
+    # 不设置会导致 dsh 把配置/凭据写到 /home/dsh/.dsh，桥接器预置的
+    # browser-session 密钥不被读取，前端认证 401。
+    # 注意语义：DSH_HOME 指向 .dsh 目录本身（不是其父目录）。
+    export DSH_HOME="${DSH_DATA_DIR}/.dsh"
     export TRIM_APPDEST="${TRIM_APPDEST}"
     export TRIM_PKGVAR="${TRIM_PKGVAR}"
 

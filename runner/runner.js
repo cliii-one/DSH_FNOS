@@ -110,8 +110,16 @@ function decodeBase64Url(value) {
 }
 
 // 确保 credentials.yaml 中存在 browser-session secret（无则生成并预置）
+// 路径规则与 dsh 一致：$DSH_HOME/.credentials.yaml（DSH_HOME 即 .dsh 目录本身），
+// 未设置时回退 $HOME/.dsh
+function resolveDshHomeDir() {
+    const explicit = process.env.DSH_HOME;
+    if (explicit && explicit.trim().length > 0) return explicit;
+    return path.join(process.env.HOME || VAR_DIR, '.dsh');
+}
+
 function ensureBrowserSessionSecret() {
-    const credPath = path.join(process.env.HOME || VAR_DIR, '.dsh', '.credentials.yaml');
+    const credPath = path.join(resolveDshHomeDir(), '.credentials.yaml');
     const secretVar = 'client-connection/browser-session';
     try {
         if (fs.existsSync(credPath)) {
@@ -170,12 +178,18 @@ function buildUpstreamHeaders(req) {
         : incomingCookie;
     const headers = {
         ...req.headers,
-        'x-forwarded-for': req.socket.remoteAddress,
+        // 经飞牛统一网关（Unix socket）进来的请求没有 remoteAddress，
+        // 直接透传 undefined 会让 Node 抛 ERR_HTTP_INVALID_HEADER_VALUE
+        'x-forwarded-for': req.socket.remoteAddress || '127.0.0.1',
         'x-forwarded-proto': 'http',
-        'x-forwarded-host': req.headers.host || `${DSH_PORT}`,
+        'x-forwarded-host': req.headers.host || `127.0.0.1:${DSH_PORT}`,
         host: `127.0.0.1:${DSH_PORT}`,
         cookie: merged,
     };
+    // 清理任何值为 undefined/null 的头，避免同类异常
+    for (const key of Object.keys(headers)) {
+        if (headers[key] === undefined || headers[key] === null) delete headers[key];
+    }
     if (req.headers.origin) headers.origin = `http://127.0.0.1:${DSH_PORT}`;
     if (req.headers.referer) headers.referer = `http://127.0.0.1:${DSH_PORT}/`;
     if (headers['sec-fetch-site'] === 'cross-site') headers['sec-fetch-site'] = 'same-origin';
