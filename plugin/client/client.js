@@ -104,6 +104,18 @@ window.__ModuleLoader__.load({
                 return () => clearInterval(pollRef.current);
             }, [state.phase, refresh]);
 
+            // 运行器完成替换后 dsh 已重启：读回结果并刷新页面加载新版。
+            // 安装期间请求会短暂失败（服务在换装），轮询会自动恢复。
+            useEffect(() => {
+                if (state.updateResult === undefined) return;
+                const ok = state.updateResult.ok === true;
+                const message = ok
+                    ? `已更新到 v${state.updateResult.version ?? ''}，正在刷新页面…`
+                    : (state.updateResult.message ?? '更新失败，已回滚');
+                setNotice(message);
+                if (ok) setTimeout(() => window.location.reload(), 1500);
+            }, [state.updateResult]);
+
             const run = useCallback(async (action, body) => {
                 setBusy(true);
                 setNotice('');
@@ -125,8 +137,8 @@ window.__ModuleLoader__.load({
                     available: '发现新版本',
                     downloading: '正在下载并准备…',
                     verifying: '正在校验…',
-                    ready: '新版本已就绪，重启后生效',
-                    installing: '正在替换并重启，页面稍后自动恢复…',
+                    ready: '新版本已就绪，可开始安装',
+                    installing: '正在替换并重启，页面稍后自动刷新…',
                     latest: '已是最新版本',
                     check: '检查更新',
                     checking: '检查中…',

@@ -221,6 +221,8 @@ function handleUpgrade(req, socket, head) {
 
 let dshChild = null;
 let server = null;
+/** 更新进行中标记：阻止并发更新，并在 dsh 意外退出时不整体退出。 */
+let updating = false;
 
 function shutdown(signal) {
     console.log(`[Runner] 收到 ${signal}，正在退出`);
@@ -232,6 +234,10 @@ function shutdown(signal) {
     setTimeout(() => process.exit(0), 3000).unref();
 }
 
+/**
+ * 启动 dsh web 子进程。
+ * 更新期间子进程会被主动结束，此时不应连带退出运行器（由 onExit 处理）。
+ */
 function startDsh() {
     // dsh 启动时读取 credentials.yaml，故必须在启动前预置密钥。
     // 工作目录用 HOME（数据目录），与 cmd/main 保持一致。
@@ -242,10 +248,107 @@ function startDsh() {
         stdio: ['ignore', 'inherit', 'inherit'],
     });
     child.on('exit', (code) => {
+        // 更新流程会主动结束子进程，此后由更新逻辑重新拉起
+        if (updating) {
+            console.log(`[Runner] dsh web 已退出 (${code})，更新流程将重新拉起`);
+            return;
+        }
         console.log(`[Runner] dsh web 已退出 (${code})，运行器同步退出`);
         process.exit(code === null ? 1 : code);
     });
     return child;
+}
+
+/** 等待 dsh 子进程退出（更新前必须先释放 node_modules 占用）。 */
+function stopDsh(timeoutMs = 15_000) {
+    return new Promise((resolve) => {
+        const child = dshChild;
+        if (child === null || child.exitCode !== null) return resolve();
+        const done = () => resolve();
+        child.once('exit', done);
+        try { child.kill('SIGTERM'); } catch (e) {}
+        // 超时强杀，避免更新流程被挂住
+        setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch (e) {}
+            resolve();
+        }, timeoutMs).unref();
+    });
+}
+
+/** 轮询等待 dsh web 就绪（代理一个请求探测）。 */
+function waitDshReady(timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    return new Promise((resolve) => {
+        const probe = () => {
+            const req = http.request({ hostname: '127.0.0.1', port: DSH_PORT, path: '/', method: 'HEAD' }, () => resolve(true));
+            req.on('error', () => {
+                if (Date.now() > deadline) return resolve(false);
+                setTimeout(probe, 500);
+            });
+            req.end();
+        };
+        probe();
+    });
+}
+
+/**
+ * 就地更新：替换 node_modules 后重新拉起 dsh，**无需重启应用本身**。
+ *
+ * 可行性依据：本运行器只依赖 Node 内置模块（见文件头部 require），
+ * 不加载 node_modules 中的任何代码，因此可以在自身运行期间替换该目录。
+ * 这也正是无需"重启应用"的原因——应用进程始终存活，只换子进程。
+ *
+ * @param staged 预装好的新 node_modules 所在目录（其父目录含 node_modules）
+ * @returns 更新结果
+ */
+async function applyUpdate(stagedDir) {
+    if (updating) throw new Error('已有更新在进行中');
+    updating = true;
+    try {
+        const nmDir = path.join(APP_DIR, 'node_modules');
+        const backup = path.join(APP_DIR, 'node_modules.update-bak');
+        const failed = path.join(APP_DIR, 'node_modules.update-failed');
+
+        // 1) 停止 dsh 子进程，释放 node_modules 占用
+        console.log('[Runner] 更新：停止 dsh web');
+        await stopDsh();
+
+        // 2) 原子替换（同分区 rename）
+        console.log('[Runner] 更新：替换 node_modules');
+        fs.rmSync(backup, { recursive: true, force: true });
+        fs.renameSync(nmDir, backup);
+        try {
+            fs.renameSync(path.join(stagedDir, 'node_modules'), nmDir);
+        } catch (error) {
+            fs.renameSync(backup, nmDir); // 就位失败立即还原
+            throw new Error(`新 node_modules 就位失败：${error.message}（已回滚）`);
+        }
+
+        // 3) 重新拉起并健康检查
+        console.log('[Runner] 更新：重新启动 dsh web');
+        dshChild = startDsh();
+        const ready = await waitDshReady();
+
+        if (ready) {
+            fs.rmSync(backup, { recursive: true, force: true });
+            fs.rmSync(stagedDir, { recursive: true, force: true });
+            console.log('[Runner] 更新：完成');
+            return { ok: true };
+        }
+
+        // 4) 启动失败则回滚
+        console.log('[Runner] 更新：新版本未就绪，回滚');
+        await stopDsh();
+        fs.rmSync(failed, { recursive: true, force: true });
+        try { fs.renameSync(nmDir, failed); } catch (e) {}
+        fs.renameSync(backup, nmDir);
+        dshChild = startDsh();
+        await waitDshReady();
+        fs.rmSync(stagedDir, { recursive: true, force: true });
+        return { ok: false, message: '新版启动失败，已回滚' };
+    } finally {
+        updating = false;
+    }
 }
 
 function startProxy() {
@@ -258,6 +361,48 @@ function startProxy() {
         });
         srv.on('error', reject);
     });
+}
+
+/**
+ * 监听更新请求文件，在运行器内完成"就地更新"。
+ *
+ * 为什么用文件而不是 HTTP 接口：对外代理监听 0.0.0.0，若把更新接口挂在
+ * 代理上，局域网内任何设备都能触发替换（高危）。文件位于应用数据目录，
+ * 只有应用用户可写，天然不对外暴露。
+ *
+ * 触发方（更新插件）写入 {stagedDir} 后，本函数执行替换并回写结果文件，
+ * 插件据结果文件更新状态。
+ */
+function watchUpdateRequests() {
+    const requestFile = path.join(VAR_DIR, 'update-request.json');
+    const resultFile = path.join(VAR_DIR, 'update-result.json');
+    let busy = false;
+
+    setInterval(async () => {
+        if (busy || !fs.existsSync(requestFile)) return;
+        busy = true;
+        let request;
+        try {
+            request = JSON.parse(fs.readFileSync(requestFile, 'utf-8'));
+        } catch (e) {
+            fs.rmSync(requestFile, { force: true });
+            busy = false;
+            return;
+        }
+        fs.rmSync(requestFile, { force: true });
+        try {
+            const result = await applyUpdate(request.stagedDir);
+            fs.writeFileSync(resultFile, JSON.stringify({ ...result, at: new Date().toISOString() }, null, 2));
+        } catch (error) {
+            fs.writeFileSync(resultFile, JSON.stringify({
+                ok: false,
+                message: error.message,
+                at: new Date().toISOString(),
+            }, null, 2));
+        } finally {
+            busy = false;
+        }
+    }, 2000).unref();
 }
 
 async function main() {
@@ -278,6 +423,7 @@ async function main() {
         dshChild.kill('SIGTERM');
         process.exit(1);
     }
+    watchUpdateRequests();
     console.log(`[Runner] 启动完成 (app=${APP_DIR}, var=${VAR_DIR})`);
 }
 

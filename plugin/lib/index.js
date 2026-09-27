@@ -8,15 +8,17 @@
  *
  * 与桌面端的差异（环境决定）：
  *   - 桌面端用 electron-updater 下载整套 Electron 安装包并 quitAndInstall；
- *   - 本应用运行在 NAS 上，更新对象是 node_modules，因此：
+ *   - 本应用运行在 NAS 上，更新对象是 node_modules，且应用不支持自重启，
+ *     因此：
  *       下载  = npm 安装新版到同分区的 staging 目录
- *       安装  = 停止服务 → 原子 rename 替换 → 重启 → 健康检查 → 失败回滚
- *   - 安装必须由独立进程完成（要替换的正是本进程脚下的目录），
- *     故 install 阶段派生 lib/install.mjs 后退出本进程。
+ *       安装  = 请求运行器（runner.js）就地完成：
+ *               停 dsh 子进程 → 原子替换 → 重新拉起 → 健康检查 → 失败回滚
+ *   - 运行器只依赖 Node 内置模块、不加载 node_modules，可在自身运行期间
+ *     安全替换该目录，且**应用本身始终存活**（飞牛侧无需手动启停）。
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const name = 'dsh-updater';
@@ -245,25 +247,54 @@ async function download(version) {
     }
 }
 
-/** 安装：派发独立进程完成替换与重启，本进程随即退出。 */
+/**
+ * 安装：请求运行器就地替换 node_modules 并重启 dsh 子进程。
+ *
+ * 为什么不自己替换：要替换的正是本插件脚下的目录，进程自身无法安全换入。
+ * 运行器（runner.js）只依赖 Node 内置模块、不加载 node_modules，
+ * 因此由它在"停掉 dsh 子进程"后替换是安全的，且**应用本身不需要重启**。
+ *
+ * 触发方式用文件而非 HTTP：运行器的对外代理监听 0.0.0.0，
+ * 若把更新接口挂在代理上，局域网内任何设备都能触发替换（高危）。
+ * 文件位于应用数据目录，仅应用用户可写，天然不对外暴露。
+ */
 function install(version) {
     if (!downloaded) throw new Error('新版尚未下载完成');
     if (version !== candidate) throw new Error('确认的版本与当前候选不一致');
 
-    const child = spawn(process.execPath, [join(import.meta.dirname, 'install.mjs')], {
-        env: {
-            ...process.env,
-            DSH_UPDATE_VERSION: version,
-            DSH_UPDATE_FROM: installedVersion(),
-        },
-        detached: true,
-        stdio: 'ignore',
-    });
-    child.unref();
+    const requestFile = join(dataDir(), 'update-request.json');
+    const resultFile = join(dataDir(), 'update-result.json');
+    // 清掉上一轮结果，便于区分本次
+    rmSync(resultFile, { force: true });
+    writeFileSync(requestFile, JSON.stringify({
+        version,
+        from: installedVersion(),
+        stagedDir: stagingDir(),
+        at: new Date().toISOString(),
+    }, null, 2));
+
     setState({ phase: 'installing', version });
-    // 留出时间让 HTTP 响应回到浏览器，再退出以便替换 node_modules
-    setTimeout(() => process.exit(0), 800);
+    // 运行器轮询该文件（2 秒一次）并执行替换；完成后 dsh 会随新版本重启
     return state;
+}
+
+/** 读取运行器的更新结果（安装阶段由前端轮询到这里）。 */
+/**
+ * 读取并取走运行器的更新结果（读后即删，避免旧结果被重复展示）。
+ * 前端在安装后高频轮询（2 秒），首次轮询即可取到；dsh 重启后插件重新加载，
+ * 首个 status 请求会拿到结果并转给前端。
+ */
+function readUpdateResult() {
+    const resultFile = join(dataDir(), 'update-result.json');
+    if (!existsSync(resultFile)) return undefined;
+    try {
+        const result = JSON.parse(readFileSync(resultFile, 'utf-8'));
+        rmSync(resultFile, { force: true });
+        return result;
+    } catch {
+        rmSync(resultFile, { force: true });
+        return undefined;
+    }
 }
 
 /* ------------------------------------------------------------------ *
@@ -312,10 +343,17 @@ export function apply(ctx) {
         ctx.effect(() => ctx.webServer.register({ kind: 'exact', path, handler }));
     };
 
-    // 当前状态（前端轮询）
+    // 当前状态（前端轮询；附加运行器的替换结果，供安装完成后展示）
     route(`${API_PREFIX}/status`, (req, res) => {
         if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' });
-        sendJson(res, 200, { ...state, currentVersion: installedVersion(), package: PKG, distTag: DIST_TAG });
+        const result = readUpdateResult();
+        sendJson(res, 200, {
+            ...state,
+            currentVersion: installedVersion(),
+            package: PKG,
+            distTag: DIST_TAG,
+            ...(result === undefined ? {} : { updateResult: result }),
+        });
     });
 
     // 检查更新
