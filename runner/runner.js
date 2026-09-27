@@ -42,6 +42,14 @@ try { process.umask(0); } catch (e) {}
 // 注入脚本：局域网 HTTP 属于非安全上下文，部分浏览器缺少 crypto.randomUUID
 const POLYFILL = 'if(typeof crypto!=="undefined"&&!crypto.randomUUID){crypto.randomUUID=function(){return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==="x"?r:(Math.random()*0x3|0x8);return v.toString(16);});}};';
 
+// 本地应用标记：dsh 前端通过地址栏 hostname 判断是否回环访问
+//   isLoopback = transport?.ownsHost === true || isLoopbackHostname(location.hostname)
+// 非回环（如 http://NAS_IP:3082）时，设置镜像会降级为 memory 模式且不发起请求，
+// 界面报「settings are unavailable in this browser」，表现为无法加载/添加模型。
+// 桌面客户端由宿主注入 { ownHost: true } 规避该限制；本应用以端口方式提供
+// 桌面入口（同一台 NAS、已通过飞牛登录），故在此补同样的标记。
+const LOCAL_APP_MARK = 'if(typeof globalThis!=="undefined"){globalThis.__DSH_TRANSPORT__={...(globalThis.__DSH_TRANSPORT__||{}),ownsHost:true};}';
+
 // ---------- 认证 cookie ----------
 
 function encodeBase64Url(value) {
@@ -147,15 +155,24 @@ function proxyRequest(req, res) {
             return;
         }
 
-        // HTML：读取全文，注入 polyfill 后返回
+        // HTML：读取全文，注入本地应用标记与 polyfill 后返回。
+        // 两者都必须先于页面脚本执行，故插入 <head> 起始处。
         const chunks = [];
         upRes.on('data', (c) => chunks.push(c));
         upRes.on('end', () => {
             const html = Buffer.concat(chunks).toString('utf-8');
-            const tag = `<script>${POLYFILL}</script>`;
-            const body = html.includes('</body>')
-                ? html.replace('</body>', `${tag}</body>`)
-                : html + tag;
+            const tag = `<script>${LOCAL_APP_MARK}${POLYFILL}</script>`;
+            // 优先插入 <head> 起始；否则紧随 <body> 之后；再不行才追加到末尾
+            let body;
+            if (html.includes('<head>')) {
+                body = html.replace('<head>', `<head>${tag}`);
+            } else if (html.includes('<body>')) {
+                body = html.replace('<body>', `<body>${tag}`);
+            } else if (html.includes('</body>')) {
+                body = html.replace('</body>', `${tag}</body>`);
+            } else {
+                body = html + tag;
+            }
             const out = Buffer.from(body, 'utf-8');
             outHeaders['content-length'] = out.length;
             delete outHeaders['content-encoding'];
