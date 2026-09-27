@@ -1,0 +1,32 @@
+{
+  "name": "dsh-updater",
+  "version": "1.0.0",
+  "description": "DSH 应用内更新：对标官方桌面端的更新体验，在设置页提示新版本并支持一键下载、重启安装",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "client",
+    "cordis.patch.yml"
+  ]
+}

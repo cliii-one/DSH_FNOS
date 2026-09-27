@@ -89,32 +89,63 @@ preflight_check() {
     return 0
 }
 
-# 在 profile 的用户补丁层启用侧边栏浏览器标签。
-# 已含该条目则跳过，保证幂等；否则按现有内容形态插入条目。
-enable_sidebar_browser() {
+# 向 profile 的补丁层写入一个 YAML 条目（幂等）。
+# dsh 生成的模板顶层是空数组 []，直接追加会产生两个 YAML 根节点，
+# 故对空模板做替换、已有内容才追加。
+# 用法：patch_profile_entry <识别关键字> <条目文本>
+patch_profile_entry() {
+    local marker="$1" entry="$2"
     local patch_file="${DSH_HOME}/profiles/web/cordis.patch.yml"
-    local entry='- id: ui-sidebar-browser
-  disabled: false'
 
-    if [ -f "${patch_file}" ] && grep -q "ui-sidebar-browser" "${patch_file}" 2>/dev/null; then
+    if [ -f "${patch_file}" ] && grep -q "${marker}" "${patch_file}" 2>/dev/null; then
         return 0
     fi
     mkdir -p "$(dirname "${patch_file}")" 2>/dev/null || true
 
     if [ ! -f "${patch_file}" ]; then
-        # 文件尚不存在：直接写入补丁层
         printf '%s\n' "${entry}" > "${patch_file}"
     elif grep -qE '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "${patch_file}"; then
-        # 文件是 dsh 生成的空模板（顶层为空数组 []）：
-        # 直接把该行替换为条目，避免出现两个 YAML 根节点
         local body
         body=$(grep -vE '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "${patch_file}")
         printf '%s\n\n%s\n' "${body}" "${entry}" > "${patch_file}"
     else
-        # 文件已有其他补丁条目：追加即可
         printf '\n%s\n' "${entry}" >> "${patch_file}"
     fi
-    log_msg "已写入 profile 补丁：启用侧边栏浏览器标签"
+}
+
+# 启用侧边栏浏览器标签（Web 模式默认关闭，但实现支持 iframe 载体）
+enable_sidebar_browser() {
+    patch_profile_entry "ui-sidebar-browser" '- id: ui-sidebar-browser
+  disabled: false'
+    log_msg "已配置 profile 补丁：启用侧边栏浏览器标签"
+}
+
+# 注册内置更新插件 dsh-updater 为 profile bundle。
+# 插件随应用包提供（位于应用 node_modules），dsh 的 bundle 解析
+# 会优先在应用安装目录查找，因此只需在清单中声明。
+enable_updater_bundle() {
+    local pkg_file="${DSH_HOME}/profiles/web/package.json"
+
+    # profile 由 dsh 首次启动时创建；文件不存在则跳过（下次启动再处理）
+    [ -f "${pkg_file}" ] || return 0
+    # 插件本体不存在时不声明，避免启动报错
+    [ -d "${TRIM_APPDEST}/node_modules/dsh-updater" ] || return 0
+    grep -q "dsh-updater" "${pkg_file}" 2>/dev/null && return 0
+
+    # 用 node 精确改写 JSON 的 bundles 数组，避免破坏已有声明
+    local node_bin="${NODE_RUNTIME:-node}"
+    "${node_bin}" -e '
+        const fs = require("fs");
+        const file = process.argv[1];
+        const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+        pkg.dsh ??= {};
+        pkg.dsh.profile ??= {};
+        pkg.dsh.profile.bundles ??= ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
+        if (!pkg.dsh.profile.bundles.includes("dsh-updater")) {
+            pkg.dsh.profile.bundles.push("dsh-updater");
+        }
+        fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+    ' "${pkg_file}" 2>/dev/null && log_msg "已注册更新插件到 profile bundle"
 }
 
 start_process() {
@@ -170,6 +201,8 @@ start_process() {
     # 以 id 匹配覆盖 disabled 即可启用。
     # 注意：dsh 只在文件不存在时写入模板，故已存在的补丁不会被覆盖。
     enable_sidebar_browser
+    # 注册内置更新插件（首次启动 profile 尚未创建时会在下次启动生效）
+    enable_updater_bundle
     export PORT="${SERVICE_PORT}"
     export DSH_PORT="${INTERNAL_PORT}"
     export TRIM_APPDEST="${TRIM_APPDEST}"
@@ -301,15 +334,8 @@ restart)
         exit 1
     fi
     ;;
-upgrade)
-    # 升级 DSH 本体：从 npm 拉取新版并替换 node_modules。
-    # 应用壳（bin/runner.js 等）不受影响，故 fnOS 兼容修复不会丢失。
-    # 透传参数以支持 ./main upgrade --check 或指定版本号
-    shift 2>/dev/null || true
-    exec "${TRIM_APPDEST}/bin/upgrade.sh" "$@"
-    ;;
 *)
-    echo "Usage: $0 {start|stop|status|restart|uninstall|upgrade [版本|--check]}"
+    echo "Usage: $0 {start|stop|status|restart|uninstall}"
     exit 1
     ;;
 esac

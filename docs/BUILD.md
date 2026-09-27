@@ -63,32 +63,17 @@ sudo appcenter-cli install-fpk /tmp/DSH.fpk
 
 访问方式：飞牛桌面点 DSH 卡片，或浏览器打开 `http://NAS地址:3082`。
 
-## 升级
+## 更新
 
-有两种方式，按需选择：
+对标官方桌面端：**DSH 设置页的「版本更新」卡片**会显示当前版本、检查新版，
+发现新版后点击按钮即可下载并重启安装，无需 SSH、无需重打 fpk。
 
-### 方式一：就地升级 DSH 本体（推荐，无需重新打包）
+更新只替换 `node_modules`，应用壳（`bin/`）不动，配置与工作区不受影响；
+安装失败会自动回滚到更新前版本。
 
-应用内已带升级脚本，在 NAS 上以**应用用户**执行：
-
-```bash
-sudo -u dsh /var/apps/dsh/cmd/main upgrade --check   # 仅检查是否有新版
-sudo -u dsh /var/apps/dsh/cmd/main upgrade           # 升级到 npm next 最新版
-sudo -u dsh /var/apps/dsh/cmd/main upgrade <版本号>   # 升级到指定版本
-```
-
-只替换 `node_modules`，应用壳（`bin/`）不动，配置与工作区不受影响。
-失败会自动回滚到升级前版本。
-
-**权限要求**：应用内容目录属主为应用用户 `dsh`（775），服务也以该用户运行。
-以 root 执行会让新装的 `node_modules` 变成 `root:root`，导致服务无法读写而
-启动失败。脚本检测到 root 身份时会自动降权到应用用户，无需手工处理。
-
-### 方式二：覆盖安装新 fpk
-
-仅在**应用壳本身有变更**时才需要（如 manifest、cmd 脚本、图标、
-runner.js 改动）。新版本 fpk 直接覆盖安装即可，用户数据在共享目录
-`/vol2/@appshare/dsh`（含 `.dsh` 配置与 `Documents` 工作区），升级不受影响。
+**仅当应用壳本身有变更时**（manifest、cmd 脚本、图标、runner.js）才需要
+重新安装 fpk。此时直接覆盖安装新 fpk 即可，用户数据在共享目录
+`/vol2/@appshare/dsh`（含 `.dsh` 配置与 `Documents` 工作区），不受影响。
 
 ## 常见问题
 

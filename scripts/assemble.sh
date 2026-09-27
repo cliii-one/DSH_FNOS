@@ -42,10 +42,6 @@ echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/ui/图标）"
 #                缺失会报 "stat app/ui: no such file or directory" 导致打包失败
 cp "${REPO_ROOT}/appshell/manifest" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/cmd" "${APP_PKG}/"
-# 应用侧可执行脚本（如本体升级脚本），随包进入 TRIM_APPDEST/bin/
-if [ -d "${REPO_ROOT}/appshell/bin" ]; then
-    cp -r "${REPO_ROOT}/appshell/bin" "${APP_CONTENT}/"
-fi
 cp -r "${REPO_ROOT}/appshell/config" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/wizard" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/ui" "${APP_PKG}/"
@@ -91,6 +87,19 @@ fi
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_CONTENT}/bin/runner.js"
 chmod +x "${APP_CONTENT}/bin/runner.js"
+
+# 内置更新插件 dsh-updater：随包进入应用 node_modules。
+# dsh 的 bundle 解析顺序是「应用安装目录优先，其次 profile 目录」，
+# 因此放在这里即可被 profile 声明引用，无需运行期 pnpm 安装。
+# 注意：必须放在 npm install 之后，否则会被后续安装流程覆盖。
+echo "==> 内置更新插件 dsh-updater"
+UPDATER_DEST="${APP_CONTENT}/node_modules/dsh-updater"
+rm -rf "${UPDATER_DEST}"
+mkdir -p "${UPDATER_DEST}"
+cp -r "${REPO_ROOT}/plugin/lib" "${UPDATER_DEST}/"
+cp -r "${REPO_ROOT}/plugin/client" "${UPDATER_DEST}/"
+cp "${REPO_ROOT}/plugin/package.json" "${REPO_ROOT}/plugin/cordis.patch.yml" "${UPDATER_DEST}/"
+[ -f "${UPDATER_DEST}/lib/install.mjs" ] || { echo "FATAL: 更新插件缺少 install.mjs" >&2; exit 1; }
 
 # 符号链接清理（关键）：
 # 飞牛安装器的 ApplyPermission 会递归遍历包内文件，遇到无法解析的软链
