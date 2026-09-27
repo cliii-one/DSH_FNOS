@@ -92,23 +92,34 @@ sudo appcenter-cli install-fpk /tmp/DSH.fpk
 
 ## 升级 DSH 本体
 
-**装好之后升级不需要重新打 fpk**，直接在 NAS 上执行：
+**装好之后升级不需要重新打 fpk**，在 NAS 上以**应用用户**执行即可：
 
 ```bash
-# 检查是否有新版（只查询，不做改动）
-sudo /var/apps/dsh/cmd/main upgrade --check
-
-# 升级到 npm next 标签的最新版
-sudo /var/apps/dsh/cmd/main upgrade
-
-# 升级到指定版本
-sudo /var/apps/dsh/cmd/main upgrade 0.1.7-rc.2
+# 以应用用户 dsh 执行（不要用 sudo，原因见下）
+sudo -u dsh /var/apps/dsh/cmd/main upgrade --check   # 检查是否有新版
+sudo -u dsh /var/apps/dsh/cmd/main upgrade           # 升级到 npm next 最新版
+sudo -u dsh /var/apps/dsh/cmd/main upgrade 0.1.7-rc.2 # 升级到指定版本
 ```
+
+> 若已通过飞牛应用中心的「终端」或应用自身的终端进入，则直接执行
+> `/var/apps/dsh/cmd/main upgrade` 即可，无需 `sudo -u`。
 
 升级流程：在应用目录内预装新版到 staging → 停止服务 → 原子替换
 `node_modules` → 重启并健康检查 → 失败自动回滚。整个过程只替换
 `node_modules`，**应用壳（`bin/runner.js` 等）保持不动**，因此本项目的
 fnOS 兼容修复不会因升级丢失。
+
+### 为什么不能用 root
+
+应用内容目录 `/vol2/@appcenter/dsh` 属主是应用用户 `dsh`（权限 775），
+服务也以该用户运行：
+
+- **用应用用户执行**：新装的 `node_modules` 属主仍是 `dsh`，服务可正常读写 ✓
+- **用 root 执行**：`node_modules` 会变成 `root:root`，应用用户无法写入，
+  dsh web 启动即失败 ✗
+
+脚本内置了该防护：检测到以 root 运行且应用用户存在时，自动降权后继续
+（与飞牛生命周期脚本的执行方式一致）。
 
 > 版本来源使用 npm 的 `next` 标签：上游 npm 的 `latest` 标签滞后于
 > master 分支（实测 `latest=0.1.5-rc.3`、`next=0.1.7-rc.2`），

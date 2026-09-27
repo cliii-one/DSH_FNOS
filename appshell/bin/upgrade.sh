@@ -40,6 +40,31 @@ esac
 log() { echo "[升级] $*"; }
 die() { echo "[升级] 错误：$*" >&2; exit 1; }
 
+# ---------- 权限守卫 ----------
+# node_modules 属主是应用用户，服务也以该用户运行。
+# 若以 root 执行，新装目录会变成 root:root，应用用户无法读写 → 服务启动失败。
+# 因此：root 自动降权；其他非属主身份直接拒绝并给出正确命令。
+APP_USER="${TRIM_USERNAME:-dsh}"
+
+if [ "$(id -u)" -eq 0 ]; then
+    if id "${APP_USER}" >/dev/null 2>&1; then
+        log "检测到 root 身份，自动降权到应用用户 ${APP_USER} 后继续"
+        exec su -s /bin/bash "${APP_USER}" -c "$(printf '%q ' "$0" "$@")"
+    else
+        die "以 root 运行且找不到应用用户 ${APP_USER}，无法安全升级"
+    fi
+fi
+
+# 校验当前身份是应用内容目录的属主，否则替换后属主错乱、服务无法启动
+NM_OWNER=$(stat -c '%U' "${APP_DIR}/node_modules" 2>/dev/null || echo "")
+if [ ! -w "${APP_DIR}/node_modules" ]; then
+    if [ -n "${NM_OWNER}" ] && [ "${NM_OWNER}" != "$(id -un)" ]; then
+        die "当前用户 $(id -un) 不是 ${APP_DIR}/node_modules 的属主（${NM_OWNER}）。
+     请改用：sudo -u ${NM_OWNER} $0 $*"
+    fi
+    die "当前用户 $(id -un) 对 ${APP_DIR}/node_modules 无写权限，无法升级"
+fi
+
 # ---------- 前置检查 ----------
 [ -x "${NPM_BIN}" ] || die "找不到 npm（${NPM_BIN}），请确认已安装 nodejs_v24 依赖"
 [ -f "${APP_DIR}/node_modules/${PKG}/package.json" ] || die "找不到已安装的 ${PKG}"

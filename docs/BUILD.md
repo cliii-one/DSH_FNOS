@@ -69,16 +69,20 @@ sudo appcenter-cli install-fpk /tmp/DSH.fpk
 
 ### 方式一：就地升级 DSH 本体（推荐，无需重新打包）
 
-应用内已带升级脚本，直接在 NAS 上执行：
+应用内已带升级脚本，在 NAS 上以**应用用户**执行：
 
 ```bash
-sudo /var/apps/dsh/cmd/main upgrade --check   # 仅检查是否有新版
-sudo /var/apps/dsh/cmd/main upgrade           # 升级到 npm next 最新版
-sudo /var/apps/dsh/cmd/main upgrade <版本号>   # 升级到指定版本
+sudo -u dsh /var/apps/dsh/cmd/main upgrade --check   # 仅检查是否有新版
+sudo -u dsh /var/apps/dsh/cmd/main upgrade           # 升级到 npm next 最新版
+sudo -u dsh /var/apps/dsh/cmd/main upgrade <版本号>   # 升级到指定版本
 ```
 
 只替换 `node_modules`，应用壳（`bin/`）不动，配置与工作区不受影响。
 失败会自动回滚到升级前版本。
+
+**权限要求**：应用内容目录属主为应用用户 `dsh`（775），服务也以该用户运行。
+以 root 执行会让新装的 `node_modules` 变成 `root:root`，导致服务无法读写而
+启动失败。脚本检测到 root 身份时会自动降权到应用用户，无需手工处理。
 
 ### 方式二：覆盖安装新 fpk
 
