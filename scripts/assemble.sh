@@ -78,6 +78,41 @@ echo "==> npm 版本: $(npm --version 2>/dev/null || echo N/A)"
 set +e
 (cd "${APP_CONTENT}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
 INSTALL_EXIT=$?
+# 上游偶发引用了尚未发布到 npm 的包（新 experimental 包常滞后发布），
+# 此时 npm 报 E404。安全策略：从安装日志中提取所有 404 的包名，仅剔除
+# 这些确认不存在的依赖后重试一次——网络抖动等其他失败原因不会误删依赖。
+# 被剔除的多为实验性功能包，dsh 运行时按需 require，缺失只影响对应功能。
+if [ ${INSTALL_EXIT} -ne 0 ]; then
+    (cd "${APP_CONTENT}" && npm install --omit=dev --no-audit --no-fund --loglevel=error) > /tmp/npm-install.log 2>&1 || true
+    MISSING=$(grep -oE '404 Not Found - GET (\S+)' /tmp/npm-install.log 2>/dev/null \
+        | sed 's/404 Not Found - GET //' \
+        | node -e '
+            const seen = new Set();
+            require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
+                try {
+                    const name = decodeURIComponent(new URL(line.trim()).pathname).replace(/^\//, "");
+                    if (name) seen.add(name);
+                } catch { /* 非 URL 行忽略 */ }
+            }).on("close", () => console.log([...seen].join(" ")));
+        ')
+    if [ -n "${MISSING}" ]; then
+        echo "WARN: npm 上不存在的依赖（剔除后重试）: ${MISSING}" >&2
+        (cd "${APP_CONTENT}" && node -e '
+            const fs = require("fs");
+            const file = "package.json";
+            const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+            const missing = process.argv.slice(1);
+            for (const field of ["dependencies", "optionalDependencies"]) {
+                const deps = pkg[field];
+                if (!deps) continue;
+                for (const name of missing) delete deps[name];
+            }
+            fs.writeFileSync(file, JSON.stringify(pkg, null, 2));
+        ' ${MISSING}) || true
+        (cd "${APP_CONTENT}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
+        INSTALL_EXIT=$?
+    fi
+fi
 set -e
 if [ ${INSTALL_EXIT} -ne 0 ]; then
     echo "FATAL: npm install 失败 (exit ${INSTALL_EXIT})" >&2
