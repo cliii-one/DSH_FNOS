@@ -69,36 +69,17 @@ cat > "${APP_CONTENT}/package.json" <<EOF
   }
 }
 EOF
-# 用 pnpm 安装应用依赖（与上游 dsh 的 workspace/peerDeps 结构兼容。
-# npm 扁平布局曾导致 dsh 的 /plugins/?? client 模块服务 404 —— 已实测）。
-echo "==> pnpm 版本: $("${PNPM_BIN:-pnpm}" --version)"
-cat > "${APP_CONTENT}/pnpm-workspace.yaml" <<EOF
-allowBuilds:
-  "@deepseek-ai/dsh-subprocess-local": true
-  "@google/genai": true
-  "koffi": true
-  "node-pty": true
-  "protobufjs": true
-minimumReleaseAge: 0
-EOF
+# 用 npm 安装（扁平无软链）：飞牛安装器对含软链的 app.tgz 会报
+# "设置目录权限失败"（pnpm 布局版实测），npm 布局版可正常安装。
+echo "==> npm 版本: $(npm --version 2>/dev/null || echo N/A)"
 set +e
-(cd "${APP_CONTENT}" && COREPACK_ENABLE_STRICT=0 "${PNPM_BIN:-pnpm}" install --prod --no-frozen-lockfile --reporter append-only)
+(cd "${APP_CONTENT}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
 INSTALL_EXIT=$?
 set -e
 if [ ${INSTALL_EXIT} -ne 0 ]; then
-    echo "FATAL: pnpm install 失败 (exit ${INSTALL_EXIT})" >&2
-    cat "${APP_CONTENT}/pnpm-workspace.yaml" >&2 || true
+    echo "FATAL: npm install 失败 (exit ${INSTALL_EXIT})" >&2
     exit ${INSTALL_EXIT}
 fi
-rm -f "${APP_CONTENT}/pnpm-workspace.yaml"
-
-# node_modules 保持 pnpm 原生布局（软链 + store 硬链接），不做实体化：
-# - tar 打包时软链按引用原样保存、硬链接自动去重（均已实测验证）
-# - 解压后 .pnpm 相对软链自洽，模块解析正常（软链指向包内路径）
-# - 体积 = 唯一数据量，避免 cp -rL 实体化造成的 N 倍冗余（曾致包体 509MB）
-echo "==> node_modules 布局统计"
-echo "    软链: $(find "${APP_CONTENT}/node_modules" -type l | wc -l) 个（tar 原样保留）"
-echo "    大小: $(du -sh "${APP_CONTENT}/node_modules" | cut -f1)"
 
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_CONTENT}/bin/runner.js"
