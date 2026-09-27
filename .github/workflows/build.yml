@@ -129,7 +129,7 @@ jobs:
           const fs = require('fs');
           const os = require('os');
           const path = require('path');
-          const tgz = process.argv[1];
+          const tgz = process.argv.find((a) => a.endsWith('.tgz'));
           const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tgz-fix-'));
           execSync(`tar -xzf ${tgz} -C ${tmp} package/package.json`);
           const manifestPath = path.join(tmp, 'package', 'package.json');
