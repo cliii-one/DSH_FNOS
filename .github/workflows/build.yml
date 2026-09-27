@@ -122,12 +122,13 @@ jobs:
           # npm install 处理 file: tgz 时会解析 tgz 内部的 dependencies，
           # 因此必须在 tgz 内剔除这些包，否则安装必然 E404。
           # 做法：解开 tgz → 从 package.json 剔除 npm 上不存在的依赖 → 重新打包。
-          node <<'EOF'
+          # 注意：GITHUB_ENV 只对后续步骤生效，本步骤内须以参数显式传路径。
+          node "$DSH_TGZ" <<'EOF'
           const { execSync } = require('child_process');
           const fs = require('fs');
           const os = require('os');
           const path = require('path');
-          const tgz = process.env.DSH_TGZ;
+          const tgz = process.argv[1];
           const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tgz-fix-'));
           execSync(`tar -xzf ${tgz} -C ${tmp} package/package.json`);
           const manifestPath = path.join(tmp, 'package', 'package.json');
