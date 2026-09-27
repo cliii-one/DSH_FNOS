@@ -107,7 +107,7 @@ function getAuthCookie() {
     return cachedAuthCookie;
 }
 
-// 构造转发头：注入自签 cookie，并对齐 Origin/Referer 以免触发 dsh 的 CSRF 校验
+// 构造转发头：注入自签 cookie，并丢弃浏览器原始来源头
 function buildUpstreamHeaders(req) {
     const authCookie = getAuthCookie();
     const incoming = req.headers['cookie'] || '';
@@ -216,11 +216,12 @@ function shutdown(signal) {
 }
 
 function startDsh() {
-    // dsh 启动时读取 credentials.yaml，故必须在启动前预置密钥
+    // dsh 启动时读取 credentials.yaml，故必须在启动前预置密钥。
+    // 工作目录用 HOME（数据目录），与 cmd/main 保持一致。
     ensureBrowserSessionSecret();
     const child = spawn(NODE_BIN, [DSH_BIN, 'web', '--port', String(DSH_PORT), '--no-open'], {
         env: { ...process.env },
-        cwd: VAR_DIR,
+        cwd: process.env.HOME || VAR_DIR,
         stdio: ['ignore', 'inherit', 'inherit'],
     });
     child.on('exit', (code) => {

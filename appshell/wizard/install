@@ -3,18 +3,8 @@
     "stepTitle": "DSH 服务配置",
     "items": [
       {
-        "type": "text",
-        "field": "wizard_port",
-        "label": "服务端口",
-        "initValue": "3082",
-        "rules": [
-          { "required": true, "message": "请输入端口" },
-          { "pattern": "^[0-9]+$", "message": "仅支持数字" }
-        ]
-      },
-      {
         "type": "tips",
-        "helpText": "DSH 通过该端口提供 Web 服务，飞牛桌面点击 DSH 图标即可打开。默认 3082，如与其他应用冲突可自行更换。"
+        "helpText": "DSH 通过固定端口 3082 提供 Web 服务，飞牛桌面点击 DSH 图标即可打开。若该端口已被其他应用占用，请先停用占用方，或在应用安装后修改 manifest 与 ui/config 中的端口。"
       }
     ]
   }

@@ -17,8 +17,9 @@ if [ -z "${TRIM_APPDEST}" ] || [ -z "${TRIM_PKGVAR}" ]; then
     exit 1
 fi
 
-# 对外服务端口（飞牛桌面入口按 manifest 的 service_port 访问）
-SERVICE_PORT="${wizard_port:-${TRIM_SERVICE_PORT:-3082}}"
+# 对外服务端口：由系统按 manifest 的 service_port 注入，
+# 同时与 ui/config 中桌面入口的 port 保持一致（两处必须相同）
+SERVICE_PORT="${TRIM_SERVICE_PORT:-3082}"
 # 内部端口：dsh web 只监听回环，由 runner 代理
 INTERNAL_PORT=$((SERVICE_PORT + 1))
 PORT_PATTERN=":(${SERVICE_PORT}|${INTERNAL_PORT}) "
@@ -135,6 +136,7 @@ start_process() {
     export TRIM_APPDEST="${TRIM_APPDEST}"
     export TRIM_PKGVAR="${TRIM_PKGVAR}"
 
+    # 以数据目录为工作目录启动运行器
     cd "${DSH_DATA_DIR}" || return 1
 
     "${NODE_RUNTIME}" "${TRIM_APPDEST}/bin/runner.js" >> "${LOG_FILE}" 2>&1 &

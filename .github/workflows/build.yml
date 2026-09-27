@@ -1,10 +1,10 @@
 # =============================================================
 # DSH for fnOS - GitHub Actions 自动构建
 #
-# 全程在 GitHub x64 服务器上构建，NAS 本机零负担
+# 全程在 GitHub arm64 服务器上构建，NAS 本机零负担
 #
 # 触发方式：
-#   1. push 到 master 自动构建（版本检查兜底，已发布过的版本自动跳过）
+#   1. push 到 master 自动构建
 #   2. 手动 workflow_dispatch（可指定上游 ref，默认 master）
 #   3. 每日定时检查上游是否发新版，有新版本才构建发布
 #
@@ -94,8 +94,8 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         uses: pnpm/action-setup@v4
         with:
-          # 用 pnpm 11：与上游 packageManager 声明一致；
-          # 构建脚本白名单用 allowBuilds 映射格式（assemble.sh 中，已实测）
+          # 用 pnpm 11：与上游 packageManager 声明一致，仅用于构建上游 monorepo；
+          # 应用壳内的依赖安装由 assemble.sh 用 npm 完成（扁平布局，规避软链问题）
           version: 11
 
       - name: 安装上游依赖并构建
@@ -136,31 +136,19 @@ jobs:
           DSH_VERSION: ${{ steps.ver.outputs.version }}
           DSH_TGZ: ${{ env.DSH_TGZ }}
         run: |
-          set -x
-          pnpm --version
           STAGE_DIR="${GITHUB_WORKSPACE}/stage" \
           UPSTREAM_DIR="${GITHUB_WORKSPACE}/upstream" \
           DSH_TGZ="${DSH_TGZ}" \
-          PNPM_BIN="$(command -v pnpm)" \
-            bash scripts/assemble.sh || {
-              echo "::group::诊断信息"
-              echo "pnpm 版本: $(pnpm --version)"
-              ls -la stage/DSH/ 2>/dev/null
-              cat stage/DSH/pnpm-workspace.yaml 2>/dev/null
-              echo "::endgroup::"
-              exit 1
-            }
+            bash scripts/assemble.sh
 
-      - name: 调试快照（始终上传，定位用）
+      - name: 调试快照（始终执行，便于远程诊断）
         if: always()
         run: |
-          # 无论成败，把 stage 目录清单与 pnpm store 状态打包，供远程诊断
           {
-            echo "== pnpm 版本 =="; pnpm --version
             echo "== stage/DSH 顶层 =="; ls -la stage/DSH/ 2>/dev/null
-            echo "== pnpm-workspace.yaml =="; cat stage/DSH/pnpm-workspace.yaml 2>/dev/null
-            echo "== node_modules/.pnpm 数量 =="; ls stage/DSH/node_modules/.pnpm 2>/dev/null | wc -l
-            echo "== dsh 本体 =="; ls stage/DSH/node_modules/@deepseek-ai/dsh/lib/bin.js 2>/dev/null
+            echo "== app 顶层 =="; ls -la stage/DSH/app/ 2>/dev/null
+            echo "== dsh 本体 =="; ls stage/DSH/app/node_modules/@deepseek-ai/dsh/lib/bin.js 2>/dev/null
+            echo "== 软链数量 =="; find stage/DSH -type l 2>/dev/null | wc -l
             echo "== .node 产物分布 =="; find stage/DSH -name "*.node" 2>/dev/null | grep -oE '(linux|darwin|win32)-(x64|arm64)[^/]*' | sort | uniq -c
           } > debug-snapshot.txt 2>&1 || true
           cat debug-snapshot.txt
@@ -218,8 +206,10 @@ jobs:
           **安装/升级方式**:
           1. 下载下方 `DSH_v${DSH_VERSION}_all.fpk`
           2. 飞牛应用中心 → 手动安装 → 上传该文件（已安装则覆盖升级）
-          3. 通过飞牛统一网关访问（/app/dsh），需先登录 NAS，无端口冲突
+          3. 安装向导中确认服务端口（默认 3082）
           4. 依赖：应用中心需已安装 nodejs_v24 运行时
+
+          **访问方式**: 飞牛桌面点 DSH 卡片，或浏览器打开 `http://NAS地址:3082`
           NOTES
           # tag 已存在则更新资产与说明，否则创建
           if gh release view "v${DSH_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

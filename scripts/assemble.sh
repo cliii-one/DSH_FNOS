@@ -72,8 +72,8 @@ cat > "${APP_CONTENT}/package.json" <<EOF
   }
 }
 EOF
-# 用 npm 安装（扁平无软链）：飞牛安装器对含软链的 app.tgz 会报
-# "设置目录权限失败"（pnpm 布局版实测），npm 布局版可正常安装。
+# 用 npm 安装（扁平无软链）：飞牛安装器对含软链的包会报
+# "设置目录权限失败"，npm 的扁平布局可规避；安装后仍会做软链清理兜底。
 echo "==> npm 版本: $(npm --version 2>/dev/null || echo N/A)"
 set +e
 (cd "${APP_CONTENT}" && npm install --omit=dev --no-audit --no-fund --loglevel=error)
@@ -89,25 +89,20 @@ cp "${REPO_ROOT}/runner/runner.js" "${APP_CONTENT}/bin/runner.js"
 chmod +x "${APP_CONTENT}/bin/runner.js"
 
 # 符号链接清理（关键）：
-# CI 上 npm 安装后，node_modules/.bin 下的软链会退化成自指断链（如 dsh -> dsh）。
-# 安装器执行 ApplyPermission 递归遍历时无法解析断链目标，直接报
-# ErrCodeInstallDirAuthException(10234)「设置目录权限失败」。
-# 对照可正常安装的社区 fpk：其软链全部有效（-> ../@deepseek-ai/dsh/lib/bin.js）。
-# 处理策略：断链一律删除；有效软链实体化为真实文件，彻底规避安装器软链兼容问题。
+# 飞牛安装器的 ApplyPermission 会递归遍历包内文件，遇到无法解析的软链
+# 会直接报 ErrCodeInstallDirAuthException(10234)「设置目录权限失败」。
+# 处理策略：断链一律删除；有效软链实体化为真实文件，彻底规避该问题。
+# 运行器直接调用 node 执行 bin.js，不依赖 node_modules/.bin 中的软链。
 echo "==> 清理符号链接（断链删除 / 有效实体化）"
 BROKEN=0
 RESOLVED=0
 while IFS= read -r link; do
     [ -z "${link}" ] && continue
     if [ -e "${link}" ]; then
-        # 有效软链：替换为实体副本（保留目标内容与可执行位）
+        # 有效软链：替换为实体副本（-a 保留目标内容与可执行位）
         target=$(readlink -f "${link}")
         rm -f "${link}"
-        if [ -d "${target}" ]; then
-            cp -a "${target}" "${link}"
-        else
-            cp -a "${target}" "${link}"
-        fi
+        cp -a "${target}" "${link}"
         RESOLVED=$((RESOLVED + 1))
     else
         # 断链：直接删除（对运行无意义，且会导致安装失败）

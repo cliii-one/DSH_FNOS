@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# 安装后脚本：确保关键目录可被应用用户读写
+# 安装后脚本：确保应用数据目录存在，便于首次启动直接可用
 mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
-chmod 755 "${TRIM_APPDEST}/cmd/main" 2>/dev/null || true
 exit 0
