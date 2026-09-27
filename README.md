@@ -90,6 +90,30 @@ sudo appcenter-cli install-fpk /tmp/DSH.fpk
 
 日志位于 `/vol2/@appdata/dsh/dsh.log`。
 
+## 升级 DSH 本体
+
+**装好之后升级不需要重新打 fpk**，直接在 NAS 上执行：
+
+```bash
+# 检查是否有新版（只查询，不做改动）
+sudo /var/apps/dsh/cmd/main upgrade --check
+
+# 升级到 npm next 标签的最新版
+sudo /var/apps/dsh/cmd/main upgrade
+
+# 升级到指定版本
+sudo /var/apps/dsh/cmd/main upgrade 0.1.7-rc.2
+```
+
+升级流程：在应用目录内预装新版到 staging → 停止服务 → 原子替换
+`node_modules` → 重启并健康检查 → 失败自动回滚。整个过程只替换
+`node_modules`，**应用壳（`bin/runner.js` 等）保持不动**，因此本项目的
+fnOS 兼容修复不会因升级丢失。
+
+> 版本来源使用 npm 的 `next` 标签：上游 npm 的 `latest` 标签滞后于
+> master 分支（实测 `latest=0.1.5-rc.3`、`next=0.1.7-rc.2`），
+> 使用 `latest` 会导致降级。
+
 ## 与官方版的差异
 
 | 项目 | 官方 deepseek-harness | 本项目 DSH |

@@ -42,6 +42,10 @@ echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/ui/图标）"
 #                缺失会报 "stat app/ui: no such file or directory" 导致打包失败
 cp "${REPO_ROOT}/appshell/manifest" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/cmd" "${APP_PKG}/"
+# 应用侧可执行脚本（如本体升级脚本），随包进入 TRIM_APPDEST/bin/
+if [ -d "${REPO_ROOT}/appshell/bin" ]; then
+    cp -r "${REPO_ROOT}/appshell/bin" "${APP_CONTENT}/"
+fi
 cp -r "${REPO_ROOT}/appshell/config" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/wizard" "${APP_PKG}/"
 cp -r "${REPO_ROOT}/appshell/ui" "${APP_PKG}/"

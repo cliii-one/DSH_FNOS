@@ -301,8 +301,15 @@ restart)
         exit 1
     fi
     ;;
+upgrade)
+    # 升级 DSH 本体：从 npm 拉取新版并替换 node_modules。
+    # 应用壳（bin/runner.js 等）不受影响，故 fnOS 兼容修复不会丢失。
+    # 透传参数以支持 ./main upgrade --check 或指定版本号
+    shift 2>/dev/null || true
+    exec "${TRIM_APPDEST}/bin/upgrade.sh" "$@"
+    ;;
 *)
-    echo "Usage: $0 {start|stop|status|restart|uninstall}"
+    echo "Usage: $0 {start|stop|status|restart|uninstall|upgrade [版本|--check]}"
     exit 1
     ;;
 esac
