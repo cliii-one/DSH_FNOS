@@ -131,6 +131,10 @@ start_process() {
     # 显式指定文档目录到共享目录下，使工作区落在飞牛文件管理可见的位置。
     mkdir -p "${DSH_DATA_DIR}/Documents" 2>/dev/null || true
     export XDG_DOCUMENTS_DIR="${DSH_DATA_DIR}/Documents"
+    # 交互终端使用的 shell：dsh 解析顺序为 $SHELL → passwd 中的登录 shell。
+    # 飞牛为应用创建的用户登录 shell 是 /usr/sbin/nologin（所有应用用户皆如此），
+    # 不指定会让侧边栏终端直接退出并提示 "This account is currently not available."。
+    export SHELL="/bin/bash"
     export PORT="${SERVICE_PORT}"
     export DSH_PORT="${INTERNAL_PORT}"
     export TRIM_APPDEST="${TRIM_APPDEST}"
