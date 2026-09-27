@@ -92,24 +92,13 @@ if [ ${INSTALL_EXIT} -ne 0 ]; then
 fi
 rm -f "${APP_CONTENT}/pnpm-workspace.yaml"
 
-# 实体化 node_modules：pnpm 的软链结构在 tar 打包/解压往返后会断裂。
-# 方法：pnpm install 到临时目录，然后用 cp -rL 整体解引用复制 ——
-# .pnpm 内部结构被完整实体化，模块解析保持有效。
-# （逐链接替换不可行：会把包挪出 .pnpm 导致其内部相对软链失效）
-echo "==> 实体化 node_modules（解引用 pnpm 软链）"
-mv "${APP_CONTENT}/node_modules" "${APP_CONTENT}/node_modules.pnpm-orig"
-mkdir -p "${APP_CONTENT}/node_modules"
-cp -rL "${APP_CONTENT}/node_modules.pnpm-orig/." "${APP_CONTENT}/node_modules/" 2>/dev/null || true
-rm -rf "${APP_CONTENT}/node_modules.pnpm-orig"
-REMAIN_LINKS=$(find "${APP_CONTENT}/node_modules" -type l 2>/dev/null | wc -l)
-echo "    剩余软链: ${REMAIN_LINKS} 个"
-if [ "${REMAIN_LINKS}" -gt 0 ]; then
-    echo "FATAL: node_modules 仍有未处理的软链" >&2
-    find "${APP_CONTENT}/node_modules" -type l >&2
-    exit 1
-fi
-# node_modules/.bin 里的软链解引用后是实体脚本，保持可执行
-chmod -R u+rwX "${APP_CONTENT}/node_modules" 2>/dev/null || true
+# node_modules 保持 pnpm 原生布局（软链 + store 硬链接），不做实体化：
+# - tar 打包时软链按引用原样保存、硬链接自动去重（均已实测验证）
+# - 解压后 .pnpm 相对软链自洽，模块解析正常（软链指向包内路径）
+# - 体积 = 唯一数据量，避免 cp -rL 实体化造成的 N 倍冗余（曾致包体 509MB）
+echo "==> node_modules 布局统计"
+echo "    软链: $(find "${APP_CONTENT}/node_modules" -type l | wc -l) 个（tar 原样保留）"
+echo "    大小: $(du -sh "${APP_CONTENT}/node_modules" | cut -f1)"
 
 # runner.js：自研运行器
 cp "${REPO_ROOT}/runner/runner.js" "${APP_CONTENT}/bin/runner.js"
