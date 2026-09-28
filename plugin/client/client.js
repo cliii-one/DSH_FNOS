@@ -27,8 +27,8 @@ window.__ModuleLoader__.load({
         const IconDownload = require('@deepseek-ai/dsh-client-ui-primitives').IconDownloadOutlineMedium;
 
         const name = 'dsh-updater';
-        // slots：设置页插槽；locale：本地化文案
-        const inject = ['slots', 'locale'];
+        // slots：设置页插槽（apply 仅消费 slots；文案为内置中文，未用 locale 服务）
+        const inject = ['slots'];
 
         const API = '/dsh-updater';
 
@@ -172,8 +172,14 @@ button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
             }, [state.phase]);
 
             // 安装期间请求会短暂失败（服务在换装），轮询会自动恢复。
+            // 结果文件由服务端保留，这里用 localStorage 记录已处理结果的时间戳去重，
+            // 避免每次轮询重复提示；也兼容页面刷新后不再重复弹已展示过的结果。
             useEffect(() => {
                 if (state.updateResult === undefined) return;
+                const at = state.updateResult.at ?? '';
+                const seenKey = 'dshup.result.at';
+                if (at && localStorage.getItem(seenKey) === at) return;
+                if (at) localStorage.setItem(seenKey, at);
                 const ok = state.updateResult.ok === true;
                 const message = ok
                     ? `已更新到 v${state.updateResult.version ?? ''}，正在刷新页面…`

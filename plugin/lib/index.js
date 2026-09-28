@@ -18,7 +18,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const name = 'dsh-updater';
@@ -85,11 +85,6 @@ function appDir() {
     return process.env.TRIM_APPDEST || process.cwd();
 }
 
-/** 数据目录：优先共享目录，回退 TRIM_PKGVAR（与 cmd/main 的推导一致）。 */
-function dataDir() {
-    const shares = (process.env.TRIM_DATA_SHARE_PATHS ?? '').split(':').map((s) => s.trim()).filter(Boolean);
-    return shares[0] ?? process.env.TRIM_PKGVAR ?? process.env.HOME ?? appDir();
-}
 
 /**
  * 运行时变量目录：与 runner 的 VAR_DIR 推导完全一致（TRIM_PKGVAR）。
@@ -121,15 +116,6 @@ function installedVersion() {
 /** staging 目录：与 node_modules 同分区，保证 install 阶段 rename 是原子操作。 */
 function stagingDir() {
     return join(appDir(), '.update-staging');
-}
-
-/** 运行升级所需的应用用户（node_modules 属主）。 */
-function appUser() {
-    try {
-        return statSync(join(appDir(), 'node_modules')).uid;
-    } catch {
-        return undefined;
-    }
 }
 
 /* ------------------------------------------------------------------ *
@@ -291,21 +277,17 @@ function install(version) {
     return state;
 }
 
-/** 读取运行器的更新结果（安装阶段由前端轮询到这里）。 */
 /**
- * 读取并取走运行器的更新结果（读后即删，避免旧结果被重复展示）。
- * 前端在安装后高频轮询（2 秒），首次轮询即可取到；dsh 重启后插件重新加载，
- * 首个 status 请求会拿到结果并转给前端。
+ * 读取运行器的更新结果。文件保留不删：网络抖动可能丢失单个响应，
+ * 读后即删会让前端错过结果；改由前端记录已处理结果的 at 时间戳去重，
+ * 文件在下次 install() 触发时被显式清空。
  */
 function readUpdateResult() {
     const resultFile = join(varDir(), 'update-result.json');
     if (!existsSync(resultFile)) return undefined;
     try {
-        const result = JSON.parse(readFileSync(resultFile, 'utf-8'));
-        rmSync(resultFile, { force: true });
-        return result;
+        return JSON.parse(readFileSync(resultFile, 'utf-8'));
     } catch {
-        rmSync(resultFile, { force: true });
         return undefined;
     }
 }

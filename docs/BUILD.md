@@ -55,7 +55,9 @@ https://static2.fnnas.com/fnpack/fnpack-1.2.1-linux-arm64
 
 ```bash
 # 方式一：appcenter-cli（SSH）
-wget -O /tmp/DSH.fpk https://github.com/<你的用户名>/DSH_FNOS/releases/latest/download/DSH_v0.1.7-rc.2_all.fpk
+# 资产文件名随版本变化，先取最新文件名再下载
+NAME=$(curl -s https://api.github.com/repos/<你的用户名>/DSH_FNOS/releases/latest | grep -oE '"DSH_v[^"]+_all\.fpk"' | tr -d '"' | head -1)
+wget -O /tmp/DSH.fpk "https://github.com/<你的用户名>/DSH_FNOS/releases/latest/download/${NAME}"
 sudo appcenter-cli install-fpk /tmp/DSH.fpk
 
 # 方式二：飞牛桌面 → 应用中心 → 手动安装 → 上传 fpk

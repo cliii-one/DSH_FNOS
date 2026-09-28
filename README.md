@@ -64,7 +64,9 @@ runner.js 承担三件事：
 Release 发布后，在 NAS 的 SSH 终端执行：
 
 ```bash
-wget -O /tmp/DSH.fpk https://github.com/<你的用户名>/DSH_FNOS/releases/latest/download/DSH_v0.1.7-rc.2_all.fpk
+# 资产文件名随版本变化，先取最新文件名再下载
+NAME=$(curl -s https://api.github.com/repos/<你的用户名>/DSH_FNOS/releases/latest | grep -oE '"DSH_v[^"]+_all\.fpk"' | tr -d '"' | head -1)
+wget -O /tmp/DSH.fpk "https://github.com/<你的用户名>/DSH_FNOS/releases/latest/download/${NAME}"
 sudo appcenter-cli install-fpk /tmp/DSH.fpk
 ```
 

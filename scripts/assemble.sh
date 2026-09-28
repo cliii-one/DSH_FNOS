@@ -35,6 +35,12 @@ echo "==> [1/4] 清理并创建组装目录"
 rm -rf "${STAGE_DIR}"
 mkdir -p "${APP_PKG}" "${APP_CONTENT}"
 
+# 将上游版本号写入 manifest 的 version：飞牛应用中心显示的应用版本
+# 与实际打包的 dsh 版本保持一致（fpk 文件名亦取该版本号）。
+if [ -n "${DSH_VERSION:-}" ]; then
+    sed -i "s/^version=.*/version=${DSH_VERSION}/" "${REPO_ROOT}/appshell/manifest"
+fi
+
 echo "==> [2/4] 复制应用壳（manifest/cmd/config/wizard/ui/图标）"
 # ui/ 需要同时存在于两处（对照可正常安装的社区 fpk）：
 #   ① 包根 ui/ → 安装器读取桌面入口配置（ui/config 的 port 等）
