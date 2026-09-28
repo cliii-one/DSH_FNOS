@@ -125,11 +125,27 @@ enable_sidebar_browser() {
 # 会优先在应用安装目录查找，因此只需在清单中声明。
 enable_updater_bundle() {
     local pkg_file="${DSH_HOME}/profiles/web/package.json"
+    local src="${TRIM_APPDEST}/node_modules/dsh-updater"
+    local dest="${DSH_HOME}/profiles/web/node_modules/dsh-updater"
 
     # profile 由 dsh 首次启动时创建；文件不存在则跳过（下次启动再处理）
     [ -f "${pkg_file}" ] || return 0
     # 插件本体不存在时不声明，避免启动报错
-    [ -d "${TRIM_APPDEST}/node_modules/dsh-updater" ] || return 0
+    [ -d "${src}" ] || return 0
+
+    # 关键：dsh 加载 profile bundle 时以【profile 目录】为 ESM import 起点，
+    # 插件必须存在于 profile/node_modules 才能被 import（实测：仅放在应用
+    # node_modules 会报 ERR_MODULE_NOT_FOUND 被静默禁用）。
+    # 因此启动前把应用内插件同步到 profile；版本变化或内容差异时全量覆盖。
+    if [ ! -d "${dest}" ] || ! diff -rq "${src}" "${dest}" >/dev/null 2>&1; then
+        rm -rf "${dest}"
+        mkdir -p "$(dirname "${dest}")"
+        cp -r "${src}" "${dest}"
+        # 显式放开读权限：dsh 进程（应用用户）必须能读全部文件
+        chmod -R u+rwX,go+rX "${dest}" 2>/dev/null || true
+        log_msg "已同步更新插件到 profile node_modules"
+    fi
+
     grep -q "dsh-updater" "${pkg_file}" 2>/dev/null && return 0
 
     # 用 node 精确改写 JSON 的 bundles 数组，避免破坏已有声明
