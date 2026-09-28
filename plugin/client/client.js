@@ -116,20 +116,6 @@ window.__ModuleLoader__.load({
                 if (ok) setTimeout(() => window.location.reload(), 1500);
             }, [state.updateResult]);
 
-            const run = useCallback(async (action, body) => {
-                setBusy(true);
-                setNotice('');
-                try {
-                    const next = await api(action, { method: 'POST', body });
-                    setState(next);
-                    if (next.phase === 'error') setNotice(failureText(next, t));
-                } catch (error) {
-                    setNotice(String(error.message ?? error));
-                } finally {
-                    setBusy(false);
-                }
-            }, [t]);
-
             const t = useCallback((key) => {
                 const dict = {
                     title: '版本更新',
@@ -154,6 +140,22 @@ window.__ModuleLoader__.load({
                 };
                 return dict[key] ?? key;
             }, []);
+
+            const run = useCallback(async (action, body) => {
+                setBusy(true);
+                setNotice('');
+                try {
+                    const next = await api(action, { method: 'POST', body });
+                    setState(next);
+                    if (next.phase === 'error') setNotice(failureText(next, t));
+                } catch (error) {
+                    setNotice(String(error.message ?? error));
+                } finally {
+                    setBusy(false);
+                }
+            }, [t]);
+
+
 
             const { phase, version, currentVersion } = state;
 
