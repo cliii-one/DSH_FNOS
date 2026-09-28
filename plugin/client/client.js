@@ -23,6 +23,8 @@ window.__ModuleLoader__.load({
         const react = require('react');
         const h = react.createElement;
         const { useState, useEffect, useCallback, useRef } = react;
+        // 官方图标组件：导航项使用，与设置页其余菜单风格一致
+        const IconDownload = require('@deepseek-ai/dsh-client-ui-primitives').IconDownloadOutlineMedium;
 
         const name = 'dsh-updater';
         // slots：设置页插槽；locale：本地化文案
@@ -43,6 +45,12 @@ window.__ModuleLoader__.load({
 .dshup-btn:hover:not(:disabled) { border-color: var(--dsh-accent, #4b8bf5); }
 .dshup-btn:disabled { opacity: .5; cursor: not-allowed; }
 .dshup-btn.primary { border-color: var(--dsh-accent, #4b8bf5); }
+.dshup-navwrap { display: inline-flex; align-items: center; gap: 6px; }
+.dshup-navwrap svg { width: 16px; height: 16px; }
+/* 设置导航按 section id 查图标表，未知 id 回退为设置齿轮（上游硬编码）。
+   本插件的 label 携带自带图标，用 :has 定位所在导航按钮并隐藏默认齿轮，
+   避免出现"齿轮 + 下载图标"两枚图标并列。 */
+button:has(> .dshup-navwrap > .dshup-navicon) > svg:first-of-type { display: none; }
 .dshup-badge { font-size: 12px; padding: 1px 7px; border-radius: 999px;
   border: 1px solid var(--dsh-accent, #4b8bf5); }
 .dshup-error { color: var(--dsh-danger, #d9534f); font-size: 12px; }
@@ -199,13 +207,24 @@ window.__ModuleLoader__.load({
         }
 
         /** 注册设置页卡片。 */
+        /** 设置导航项的 label：自带图标 + 文字。
+         *  上游导航按 section id 硬编码图标表（未知 id 显示设置齿轮），
+         *  而 label 经 resolveSlotLabel 原样透传、React 渲染其返回的节点，
+         *  故以节点携带官方图标，并用上方 CSS 隐藏默认齿轮。 */
+        function navLabel() {
+            return h('span', { className: 'dshup-navwrap' }, [
+                h(IconDownload, { className: 'dshup-navicon', key: 'icon' }),
+                h('span', { key: 'text' }, '版本更新'),
+            ]);
+        }
+
         function apply(ctx) {
             ensureStyle();
             ctx.slots.inject('settings.section', () => ctx.slots.register({
                 name: 'settings.section',
                 id: 'updater',
                 order: 90,
-                label: () => '版本更新',
+                label: navLabel,
             }, UpdaterCard));
         }
 
