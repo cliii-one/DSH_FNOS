@@ -131,7 +131,8 @@ jobs:
           const path = require('path');
           const tgz = process.argv.find((a) => a.endsWith('.tgz'));
           const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tgz-fix-'));
-          execSync(`tar -xzf ${tgz} -C ${tmp} package/package.json`);
+          // 解出全部内容（此前只解 package.json，重打包会把其余文件全部丢失）
+          execSync(`tar -xzf ${tgz} -C ${tmp}`);
           const manifestPath = path.join(tmp, 'package', 'package.json');
           const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
           const removed = [];
@@ -144,7 +145,12 @@ jobs:
               catch { removed.push(name); delete deps[name]; }
             }
           }
-          if (removed.length > 0) {
+          // 保险：npm view 网络故障会把可用依赖误判为不存在。
+          // 若"全部依赖"都被剔除，几乎必然是网络问题而非上游问题，
+          // 此时保持 tgz 原样，让后续 npm install 的 404 容错去处理。
+          const totalDeps = Object.keys(manifest.dependencies ?? {}).length
+            + Object.keys(manifest.optionalDependencies ?? {}).length;
+          if (removed.length > 0 && removed.length < totalDeps) {
             fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
             execSync(`tar -czf ${tgz} -C ${tmp} package`);
             console.log('已从 tgz 剔除 npm 上不存在的依赖:', removed.join(', '));
