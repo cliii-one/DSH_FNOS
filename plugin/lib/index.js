@@ -91,6 +91,17 @@ function dataDir() {
     return shares[0] ?? process.env.TRIM_PKGVAR ?? process.env.HOME ?? appDir();
 }
 
+/**
+ * 运行时变量目录：与 runner 的 VAR_DIR 推导完全一致（TRIM_PKGVAR）。
+ * 更新请求/结果文件放这里——runner 在 VAR_DIR 轮询请求文件，
+ * 两侧必须指向同一目录，否则 runner 永远收不到请求（实测踩坑：
+ * 写在共享目录 @appshare 下而 runner 监听的是 @appdata，更新卡死在
+ * installing）。
+ */
+function varDir() {
+    return process.env.TRIM_PKGVAR ?? appDir();
+}
+
 /** npm 可执行文件：用应用中心 nodejs_v24 依赖自带的 npm。 */
 function npmBin() {
     const candidate = '/var/apps/nodejs_v24/target/bin/npm';
@@ -262,8 +273,8 @@ function install(version) {
     if (!downloaded) throw new Error('新版尚未下载完成');
     if (version !== candidate) throw new Error('确认的版本与当前候选不一致');
 
-    const requestFile = join(dataDir(), 'update-request.json');
-    const resultFile = join(dataDir(), 'update-result.json');
+    const requestFile = join(varDir(), 'update-request.json');
+    const resultFile = join(varDir(), 'update-result.json');
     // 清掉上一轮结果，便于区分本次
     rmSync(resultFile, { force: true });
     writeFileSync(requestFile, JSON.stringify({
@@ -285,7 +296,7 @@ function install(version) {
  * 首个 status 请求会拿到结果并转给前端。
  */
 function readUpdateResult() {
-    const resultFile = join(dataDir(), 'update-result.json');
+    const resultFile = join(varDir(), 'update-result.json');
     if (!existsSync(resultFile)) return undefined;
     try {
         const result = JSON.parse(readFileSync(resultFile, 'utf-8'));

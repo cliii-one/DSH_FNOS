@@ -159,6 +159,18 @@ button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
             }, [state.phase, refresh]);
 
             // 运行器完成替换后 dsh 已重启：读回结果并刷新页面加载新版。
+            // 安装期看门狗：正常更新在 2-3 分钟内完成；若超时仍未收到运行器
+            // 的结果（如请求文件未能送达 runner），提示用户刷新页面恢复，
+            // 避免永久停留在"正在替换并重启"。
+            useEffect(() => {
+                if (state.phase !== 'installing') return;
+                const timer = setTimeout(() => {
+                    setNotice('更新等待超时。请刷新页面查看当前状态；若版本未变化，请重试安装。');
+                    setBusy(false);
+                }, 180_000);
+                return () => clearTimeout(timer);
+            }, [state.phase]);
+
             // 安装期间请求会短暂失败（服务在换装），轮询会自动恢复。
             useEffect(() => {
                 if (state.updateResult === undefined) return;
