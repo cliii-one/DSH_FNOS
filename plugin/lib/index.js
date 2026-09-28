@@ -197,9 +197,11 @@ async function check() {
         if (cmp === null) throw new Error(`版本号无法比较：${current} / ${latest}`);
         candidate = cmp > 0 ? latest : undefined;
         downloaded = false;
+        // checkedAt/latestKnown 区分「从未检查」与「已检查且已是最新」，
+        // 前端据此在最新版本行显示「尚未检查」或「已是最新 vX.Y.Z」。
         return setState(candidate === undefined
-            ? { phase: 'idle', currentVersion: current }
-            : { phase: 'available', version: candidate, currentVersion: current });
+            ? { phase: 'idle', currentVersion: current, latestKnown: latest, checkedAt: new Date().toISOString() }
+            : { phase: 'available', version: candidate, currentVersion: current, checkedAt: new Date().toISOString() });
     } catch (error) {
         return setState(failure(error, 'check'));
     } finally {

@@ -263,7 +263,10 @@ button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
                     phase === 'available' && info('r2', t('latest'),
                         [h('span', { className: 'dshup-dot', key: 'dot' }), 'v' + version, h('span', { className: 'dshup-badge', key: 'b' }, t('new'))]),
                     (phase === 'idle' || phase === 'error') && info('r2', t('latest'),
-                        phase === 'error' ? t('unknownState') : t('notChecked')),
+                        // 已检查过则显示检查结论；从未检查才显示「尚未检查」
+                        phase === 'error' ? t('unknownState')
+                            : state.latestKnown !== undefined ? `已是最新（v${state.latestKnown}）`
+                            : t('notChecked')),
                     phase === 'ready' && info('r2', t('latest'), 'v' + version),
                     (phase === 'available' || phase === 'ready') &&
                         h('div', { className: 'dshup-info', key: 'r3' }, [
