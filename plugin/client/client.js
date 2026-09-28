@@ -50,7 +50,9 @@ window.__ModuleLoader__.load({
 /* 设置导航按 section id 查图标表，未知 id 回退为设置齿轮（上游硬编码）。
    本插件的 label 携带自带图标，用 :has 定位所在导航按钮并隐藏默认齿轮，
    避免出现"齿轮 + 下载图标"两枚图标并列。 */
-button:has(> .dshup-navwrap > .dshup-navicon) > svg:first-of-type { display: none; }
+/* 齿轮是 button 的直接子元素，我们的图标嵌在 span.navLabel 之内（隔一层），
+   因此 :has() 里用后代选择器定位，再隐藏 button 下第一枚 svg（即齿轮）。 */
+button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
 .dshup-badge { font-size: 12px; padding: 1px 7px; border-radius: 999px;
   border: 1px solid var(--dsh-accent, #4b8bf5); }
 .dshup-error { color: var(--dsh-danger, #d9534f); font-size: 12px; }
