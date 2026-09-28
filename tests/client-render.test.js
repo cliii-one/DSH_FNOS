@@ -45,6 +45,15 @@ globalThis.__ModuleLoader__ = {
         } catch (e) {
             check(false, '执行异常: ' + e.message);
         }
+        // profile 对账保留性：dsh 的 reconcileProfilePlugins 会移除
+        // 不在 dependencies 里的 bundle（cmd/main 必须同时写两处）
+        const previous = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-updater'];
+        const deps = [{ name: 'dsh-updater', bundle: true }];
+        const beforeNames = new Set(), afterNames = new Set(deps.map(d => d.name));
+        const bundleNames = new Set(deps.filter(d => d.bundle).map(d => d.name));
+        const kept = previous.filter(n => !(beforeNames.has(n) || afterNames.has(n)) || bundleNames.has(n));
+        check(kept.includes('dsh-updater'), 'profile 对账保留 dsh-updater（需 dependencies 声明）');
+
         if (failed > 0) process.exit(1);
         console.log('\n全部通过');
     },

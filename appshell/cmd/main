@@ -148,11 +148,17 @@ enable_updater_bundle() {
 
     grep -q "dsh-updater" "${pkg_file}" 2>/dev/null && return 0
 
-    # 用 node 精确改写 JSON 的 bundles 数组，避免破坏已有声明
+    # 用 node 精确改写 JSON，避免破坏已有声明。
+    # 必须同时写 bundles 与 dependencies：dsh 的插件对账
+    # （reconcileProfilePlugins）会把「不在 dependencies 里」的 bundle
+    # 从 bundles 中移除——只写 bundles 的话，任何一次 pnpm 操作后
+    # 插件都会被静默摘除（实测 0.2.0 升级后菜单消失即此因）。
+    # dependencies 用 file: 指向应用内插件目录，无需运行 pnpm 安装。
     local node_bin="${NODE_RUNTIME:-node}"
     "${node_bin}" -e '
         const fs = require("fs");
         const file = process.argv[1];
+        const appDest = process.argv[2];
         const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
         pkg.dsh ??= {};
         pkg.dsh.profile ??= {};
@@ -160,8 +166,10 @@ enable_updater_bundle() {
         if (!pkg.dsh.profile.bundles.includes("dsh-updater")) {
             pkg.dsh.profile.bundles.push("dsh-updater");
         }
+        pkg.dependencies ??= {};
+        pkg.dependencies["dsh-updater"] = "file:" + appDest + "/node_modules/dsh-updater";
         fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
-    ' "${pkg_file}" 2>/dev/null && log_msg "已注册更新插件到 profile bundle"
+    ' "${pkg_file}" "${TRIM_APPDEST}" 2>/dev/null && log_msg "已注册更新插件到 profile bundle"
 }
 
 start_process() {
