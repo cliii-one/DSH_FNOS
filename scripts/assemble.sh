@@ -67,14 +67,19 @@ if [ -z "${DSH_TGZ:-}" ] || [ ! -f "${DSH_TGZ}" ]; then
     exit 1
 fi
 echo "    从 tgz 安装: ${DSH_TGZ}"
-# 生成 package.json，依赖指向本地 tgz
+# 生成 package.json，依赖指向本地 tgz。
+# 同时钉住 pnpm：dsh 的插件安装器（plugin-manager）硬依赖 PATH 里的 pnpm
+# 可执行文件、无任何兜底；fnOS 打包产物不带 pnpm、服务端 PATH 也没有，
+# 不内置则插件市场/插件安装必然失败。钉 10.14.0 与官方社区包一致
+# （npm 装完即有 node_modules/.bin/pnpm，无运行时下载，比 corepack 确定性）。
 cat > "${APP_CONTENT}/package.json" <<EOF
 {
   "name": "dsh-fnos-app",
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "@deepseek-ai/dsh": "file:${DSH_TGZ}"
+    "@deepseek-ai/dsh": "file:${DSH_TGZ}",
+    "pnpm": "10.14.0"
   }
 }
 EOF
@@ -184,6 +189,12 @@ if [ ! -d "${APP_CONTENT}/node_modules/@deepseek-ai/dsh" ]; then
 fi
 if [ ! -f "${APP_CONTENT}/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
     echo "FATAL: dsh/lib/bin.js 不存在，构建产物不完整" >&2
+    exit 1
+fi
+# 插件安装器依赖 pnpm（dsh 硬依赖 PATH 里的 pnpm，无兜底）；
+# runner 已把 node_modules/.bin 前置到子进程 PATH，这里校验产物确实带上了
+if [ ! -e "${APP_CONTENT}/node_modules/.bin/pnpm" ] && [ ! -f "${APP_CONTENT}/node_modules/pnpm/bin/pnpm.cjs" ]; then
+    echo "FATAL: 打包产物缺少 pnpm（插件安装功能将不可用）" >&2
     exit 1
 fi
 # 原生模块校验：arm64 运行器上原生安装，产物应为 linux-arm64

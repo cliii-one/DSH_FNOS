@@ -242,8 +242,13 @@ function startDsh() {
     // dsh 启动时读取 credentials.yaml，故必须在启动前预置密钥。
     // 工作目录用 HOME（数据目录），与 cmd/main 保持一致。
     ensureBrowserSessionSecret();
+    // 插件安装器硬依赖 PATH 里的 pnpm。打包时已把钉住版本的 pnpm 装进
+    // 应用 node_modules（npm 扁平布局下位于 node_modules/.bin/pnpm），
+    // 这里把它前置到子进程 PATH，服务端 PATH 没有 pnpm 也能装卸插件。
+    // 运行中 node_modules 会被就地更新替换，.bin 随之更新，无需额外处理。
+    const binDir = path.join(APP_DIR, 'node_modules', '.bin');
     const child = spawn(NODE_BIN, [DSH_BIN, 'web', '--port', String(DSH_PORT), '--no-open'], {
-        env: { ...process.env },
+        env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}` },
         cwd: process.env.HOME || VAR_DIR,
         stdio: ['ignore', 'inherit', 'inherit'],
     });

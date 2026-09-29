@@ -135,6 +135,24 @@ graph LR
 | 版本 | 跟随打包时点 | CI 自动跟上游最新 |
 | 数据目录 | 独立 | 独立，互不影响 |
 
+## 插件安装与 pnpm
+
+dsh 的插件安装器（插件市场 / `dsh plugin` 装卸）**硬依赖 PATH 里的 pnpm
+可执行文件，无任何兜底**。本项目已内置，无需手工安装 pnpm：
+
+- 打包时在应用 `package.json` 钉住 `pnpm@10.14.0`（与官方社区包同版本），
+  `npm install` 后即有 `node_modules/.bin/pnpm`，无运行时下载
+- runner 启动 dsh 子进程时把 `node_modules/.bin` 前置到其 `PATH`，
+  服务端 PATH 没有 pnpm 也能正常装卸插件
+
+如需改用其他 pnpm，可在 dsh 设置里配置 plugin-manager 的
+`pnpmCommand`（逃生舱口，覆盖 PATH 查找）。
+
+> 上游侧的根本修复（安装器内置惰性解析链：配置值 → 应用内置 → PATH →
+> corepack → npx）需要向
+> [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+> 提 PR；在此之前本项目的内置方案已完整覆盖插件安装需求。
+
 ## 构建细节
 
 见 [docs/BUILD.md](docs/BUILD.md)。
