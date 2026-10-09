@@ -95,6 +95,29 @@ window.__ModuleLoader__.load({
 
 .dshup-navwrap { display: inline-flex; align-items: center; gap: 6px; }
 .dshup-navwrap svg { width: 16px; height: 16px; }
+
+/* 通道标签：贴在版本号后面的小胶囊，用于区分 next / alpha 来源 */
+.dshup-ch { font-size: 11px; padding: 1px 7px; border-radius: 999px; margin-left: 6px;
+  font-variant-numeric: tabular-nums; opacity: .85;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.14)); }
+.dshup-ch.alpha { color: var(--dsw-alias-label-accent, #2f6fed);
+  background: color-mix(in srgb, var(--dsw-alias-label-accent, #2f6fed) 14%, transparent); }
+
+/* 预览通道开关行：说明文字 + 右侧开关 */
+.dshup-opt { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 16px; border-top: 1px solid var(--dsw-alias-separator, rgba(127,127,127,.18)); }
+.dshup-opt-main { min-width: 0; }
+.dshup-opt-title { font-size: 13px; }
+.dshup-opt-desc { margin-top: 2px; font-size: 12px; line-height: 17px; opacity: .6; }
+.dshup-switch { flex: none; width: 38px; height: 22px; border-radius: 999px; border: none;
+  padding: 0; cursor: pointer; position: relative; transition: background .15s ease;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.28)); }
+.dshup-switch:disabled { opacity: .5; cursor: not-allowed; }
+.dshup-switch[aria-checked="true"] { background: var(--dsw-alias-label-accent, #2f6fed); }
+.dshup-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+  border-radius: 999px; background: #fff; transition: transform .15s ease; }
+.dshup-switch[aria-checked="true"]::after { transform: translateX(16px); }
+
 /* 设置导航按 section id 查图标表，未知 id 回退为设置齿轮（上游硬编码）。
    本插件的 label 携带自带图标，用 :has 定位所在导航按钮并隐藏默认齿轮。
    齿轮是 button 的直接子元素，我们的图标嵌在 span.navLabel 之内（隔一层），
@@ -216,6 +239,9 @@ button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
                     downloadNetwork: '网络不可用，下载中断',
                     installFailed: '安装失败，已回滚到原版本',
                     unknown: '发生未知错误',
+                    previewTitle: '跟踪 alpha 预览通道',
+                    previewOn: '已开启：同时检查 next 与 alpha，可发现更超前的实验版本',
+                    previewOff: '已关闭：只跟踪 next（推荐日常使用）',
                 };
                 return dict[key] ?? key;
             }, []);
@@ -234,6 +260,30 @@ button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
                 }
             }, [t]);
 
+            /**
+             * 切换预览（alpha）通道。
+             * 服务端会立即重新检查一次并把结果回传，用户马上能看到
+             * alpha 上有没有更新的版本；这里只需要把新状态写回。
+             */
+            const togglePreview = useCallback(async () => {
+                setBusy(true);
+                setNotice('');
+                try {
+                    const next = await api('/settings', {
+                        method: 'POST',
+                        body: { previewChannel: !(state.previewChannel === true) },
+                    });
+                    setState(next);
+                    setNotice(next.previewChannel === true
+                        ? '已开启 alpha 通道，可检测到更超前的实验版本。'
+                        : '已关闭 alpha 通道，仅跟踪 next（推荐日常使用）。');
+                } catch (error) {
+                    setNotice(String(error.message ?? error));
+                } finally {
+                    setBusy(false);
+                }
+            }, [state.previewChannel]);
+
 
 
             const { phase, version, currentVersion } = state;
@@ -246,6 +296,12 @@ button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
                 h('span', { className: 'dshup-info-label', key: 'l' }, label),
                 h('span', { className: 'dshup-info-value', key: 'v' }, value),
             ]);
+
+            /** 版本号后的小胶囊，标明它来自哪个通道（alpha 高亮）。 */
+            const channelTag = (ch) => h('span', {
+                key: 'ch',
+                className: 'dshup-ch' + (ch === 'alpha' ? ' alpha' : ''),
+            }, ch);
 
             const active = phase === 'downloading' || phase === 'verifying' || phase === 'installing';
             const noticeText = phase === 'error' ? failureText(state, t) : (notice !== '' && phase !== 'error' ? notice : null);
@@ -267,12 +323,16 @@ button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
                 h('div', { className: 'dshup-rows', key: 'rows' }, [
                     info('r1', t('current'), 'v' + (currentVersion ?? '…')),
                     phase === 'available' && info('r2', t('latest'),
-                        [h('span', { className: 'dshup-dot', key: 'dot' }), 'v' + version, h('span', { className: 'dshup-badge', key: 'b' }, t('new'))]),
+                        [h('span', { className: 'dshup-dot', key: 'dot' }), 'v' + version,
+                         h('span', { className: 'dshup-badge', key: 'b' }, t('new')),
+                         state.channel !== undefined ? channelTag(state.channel) : null]),
                     (phase === 'idle' || phase === 'error') && info('r2', t('latest'),
                         // 已检查过则显示检查结论；从未检查才显示「尚未检查」
                         phase === 'error' ? t('unknownState')
-                            : state.latestKnown !== undefined ? `已是最新（v${state.latestKnown}）`
-                            : t('notChecked')),
+                            : state.latestKnown !== undefined
+                                ? ['已是最新（v' + state.latestKnown + '）',
+                                   state.latestChannel !== undefined ? channelTag(state.latestChannel) : null]
+                                : t('notChecked')),
                     phase === 'ready' && info('r2', t('latest'), 'v' + version),
                     (phase === 'available' || phase === 'ready') &&
                         h('div', { className: 'dshup-info', key: 'r3' }, [
@@ -313,6 +373,25 @@ button:has(.dshup-navwrap .dshup-navicon) > svg:first-of-type { display: none; }
                         key: 'install', type: 'button', className: 'dshup-btn primary', disabled: busy,
                         onClick: () => run('/install', { version }),
                     }, t('install')),
+                ]),
+
+                // 预览通道开关：默认关闭（只跟 next），开启后额外跟踪 alpha
+                h('div', { className: 'dshup-opt', key: 'opt' }, [
+                    h('div', { className: 'dshup-opt-main', key: 'main' }, [
+                        h('div', { className: 'dshup-opt-title', key: 't' }, t('previewTitle')),
+                        h('div', { className: 'dshup-opt-desc', key: 'd' },
+                            state.previewChannel === true
+                                ? t('previewOn')
+                                : t('previewOff')),
+                    ]),
+                    h('button', {
+                        key: 'sw', type: 'button', role: 'switch',
+                        className: 'dshup-switch',
+                        'aria-checked': state.previewChannel === true,
+                        'aria-label': t('previewTitle'),
+                        disabled: busy,
+                        onClick: togglePreview,
+                    }),
                 ]),
             ]);
         }

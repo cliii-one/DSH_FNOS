@@ -25,8 +25,16 @@ export const name = 'dsh-updater';
 
 /** 本插件要升级的包（DSH 本体）。 */
 const PKG = '@deepseek-ai/dsh';
-/** 版本来源标签：上游 npm 的 latest 滞后于 master，必须用 next。 */
-const DIST_TAG = 'next';
+/**
+ * 版本来源通道（npm dist-tag）。
+ *
+ * 只跟 `next`：上游的 latest 标签滞后于主线，next 才是主线预发布，跟踪它最稳。
+ * `alpha` 是更超前的实验通道——实测上游把 0.2.1-alpha.1 只挂在 alpha 上，
+ * 而 next 停在 0.2.0-rc.2，因此只查 next 会"永远看不到" alpha 版本。
+ * 默认不查 alpha（稳定性优先），由用户在设置页手动开启。
+ */
+const DEFAULT_CHANNEL = 'next';
+const PREVIEW_CHANNEL = 'alpha';
 /** 检查间隔与抖动，对标桌面端 update-schedule 的默认值（10 分钟）。 */
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;
 const CHECK_JITTER = 0.2;
@@ -126,12 +134,59 @@ function stagingDir() {
 let state = { phase: 'idle' };
 /** 已确认可用的候选版本；由 check 写入，download/install 校验其一致性。 */
 let candidate;
+/** 候选版本来自哪个通道（next / alpha），仅用于界面展示与日志。 */
+let candidateChannel;
 /** 预装是否已完成。 */
 let downloaded = false;
 /** 正在进行的操作，避免并发重入。 */
 let pending = null;
 /** 定时检查句柄。 */
 let timer;
+
+/* ------------------------------------------------------------------ *
+ * 设置：预览通道开关
+ * ------------------------------------------------------------------ */
+
+/**
+ * 设置文件路径。放在 TRIM_PKGVAR（应用数据目录），与 runner 的
+ * 更新请求文件同目录——该目录只有应用用户可写，天然不对外暴露。
+ */
+function settingsFile() {
+    return join(varDir(), 'updater-settings.json');
+}
+
+/**
+ * 是否启用 alpha（预览）通道。
+ *
+ * 默认关闭：只看 next，稳定性优先。开启后额外查询 alpha 并取两者较高的
+ * 版本。**只影响"能否发现"**，安装仍需用户在卡片上手动确认。
+ */
+let previewEnabled = false;
+
+/** 读取设置文件；文件缺失或损坏时保持默认值（不抛错，避免拖垮启动）。 */
+function loadSettings() {
+    try {
+        const parsed = JSON.parse(readFileSync(settingsFile(), 'utf8'));
+        previewEnabled = parsed?.previewChannel === true;
+    } catch {
+        previewEnabled = false;
+    }
+}
+
+/** 写入设置文件；失败只返回 false，由调用方记日志（下次保存会再试）。 */
+function saveSettings() {
+    try {
+        writeFileSync(settingsFile(), JSON.stringify({ previewChannel: previewEnabled }, null, 2));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** 当前启用的通道列表：始终含 next，开启预览后追加 alpha。 */
+function enabledChannels() {
+    return previewEnabled ? [DEFAULT_CHANNEL, PREVIEW_CHANNEL] : [DEFAULT_CHANNEL];
+}
 
 function setState(next) {
     state = next;
@@ -148,10 +203,10 @@ function failure(error, failedOperation) {
     };
 }
 
-/** 查询 registry 上 next 标签的版本。 */
-function fetchLatestVersion(signal) {
+/** 查询 registry 上某个通道（dist-tag）指向的版本号。 */
+function fetchTagVersion(tag, signal) {
     return new Promise((resolve, reject) => {
-        const child = spawn(npmBin(), ['view', `${PKG}@${DIST_TAG}`, 'version'], {
+        const child = spawn(npmBin(), ['view', `${PKG}@${tag}`, 'version'], {
             env: process.env,
             signal,
         });
@@ -170,6 +225,28 @@ function fetchLatestVersion(signal) {
     });
 }
 
+/**
+ * 在当前启用的通道里取最高版本。
+ *
+ * 为什么是"取最高"而不是"只看 alpha"：两个通道的领先关系会变（alpha 也可能
+ * 落后于 next）。同时查询再比大小，既不会漏掉 alpha 的新版本，也不会因为
+ * alpha 落后而把用户降级。
+ *
+ * @param {string[]} channels 要查询的标签列表
+ * @returns {Promise<{version: string, channel: string}>} 最高的版本及其来源通道
+ */
+async function resolveLatest(channels, signal) {
+    const found = await Promise.all(channels.map(async (tag) => ({ tag, version: await fetchTagVersion(tag, signal) })));
+    let best;
+    for (const item of found) {
+        if (item.version === '') continue;
+        // 版本号互不可比（格式异常）时跳过，避免整次检查失败
+        if (best === undefined || (compareVersions(item.version, best.version) ?? 0) > 0) best = item;
+    }
+    if (best === undefined) throw new Error('registry 未返回版本号');
+    return { version: best.version, channel: best.tag };
+}
+
 /** 检查更新：对标桌面端 doCheck。 */
 async function check() {
     if (pending?.kind === 'download') return state;
@@ -177,17 +254,17 @@ async function check() {
     setState({ phase: 'checking' });
     try {
         const current = installedVersion();
-        const latest = await fetchLatestVersion();
-        if (latest === '') throw new Error('registry 未返回版本号');
-        const cmp = compareVersions(latest, current);
-        if (cmp === null) throw new Error(`版本号无法比较：${current} / ${latest}`);
-        candidate = cmp > 0 ? latest : undefined;
+        const latest = await resolveLatest(enabledChannels());
+        const cmp = compareVersions(latest.version, current);
+        if (cmp === null) throw new Error(`版本号无法比较：${current} / ${latest.version}`);
+        candidate = cmp > 0 ? latest.version : undefined;
+        candidateChannel = latest.channel;
         downloaded = false;
         // checkedAt/latestKnown 区分「从未检查」与「已检查且已是最新」，
         // 前端据此在最新版本行显示「尚未检查」或「已是最新 vX.Y.Z」。
         return setState(candidate === undefined
-            ? { phase: 'idle', currentVersion: current, latestKnown: latest, checkedAt: new Date().toISOString() }
-            : { phase: 'available', version: candidate, currentVersion: current, checkedAt: new Date().toISOString() });
+            ? { phase: 'idle', currentVersion: current, latestKnown: latest.version, latestChannel: latest.channel, checkedAt: new Date().toISOString() }
+            : { phase: 'available', version: candidate, channel: latest.channel, currentVersion: current, checkedAt: new Date().toISOString() });
     } catch (error) {
         return setState(failure(error, 'check'));
     } finally {
@@ -272,7 +349,7 @@ function install(version) {
         at: new Date().toISOString(),
     }, null, 2));
 
-    setState({ phase: 'installing', version });
+    setState({ phase: 'installing', version, channel: candidateChannel ?? DEFAULT_CHANNEL });
     // 运行器轮询该文件（2 秒一次）并执行替换；完成后 dsh 会随新版本重启
     return state;
 }
@@ -333,6 +410,9 @@ function sameOrigin(req) {
  * @param ctx - 宿主上下文，含 webServer 服务。
  */
 export function apply(ctx) {
+    // 读取已保存的通道设置（默认只跟 next）
+    loadSettings();
+
     /** 注册一个路由并随插件卸载自动清理。 */
     const route = (path, handler) => {
         ctx.effect(() => ctx.webServer.register({ kind: 'exact', path, handler }));
@@ -346,9 +426,46 @@ export function apply(ctx) {
             ...state,
             currentVersion: installedVersion(),
             package: PKG,
-            distTag: DIST_TAG,
+            distTag: DEFAULT_CHANNEL,
+            channel: state.channel ?? candidateChannel ?? DEFAULT_CHANNEL,
+            previewChannel: previewEnabled,
+            channels: enabledChannels(),
             ...(result === undefined ? {} : { updateResult: result }),
         });
+    });
+
+    // 读取/切换预览（alpha）通道。开启后立即重新检查一次，让用户马上看到结果。
+    route(`${API_PREFIX}/settings`, async (req, res) => {
+        if (req.method === 'GET') {
+            return sendJson(res, 200, { previewChannel: previewEnabled, channels: enabledChannels() });
+        }
+        if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
+        if (!sameOrigin(req)) return sendJson(res, 403, { error: 'forbidden' });
+        try {
+            // 请求体解析失败时给出可读原因（V8 的解析报错原文会内嵌输入片段，不外传）
+            let body;
+            try {
+                body = JSON.parse(await readBody(req) || '{}');
+            } catch {
+                throw new Error('请求体不是合法 JSON');
+            }
+            if (typeof body.previewChannel !== 'boolean') {
+                throw new Error('previewChannel 必须是布尔值');
+            }
+            previewEnabled = body.previewChannel;
+            const saved = saveSettings();
+            ctx.logger?.info?.(`[dsh-updater] 预览通道已${previewEnabled ? '开启' : '关闭'}（通道：${enabledChannels().join(', ')}）`);
+            // 切换通道后原候选可能来自已关闭的通道，作废并立即重新检查
+            candidate = undefined;
+            candidateChannel = undefined;
+            downloaded = false;
+            const next = await check();
+            sendJson(res, 200, { ...next, previewChannel: previewEnabled, channels: enabledChannels(), persisted: saved });
+        } catch (error) {
+            // 与 /download、/install 同约定：业务错误回 200 + error 状态，
+            // 前端据 failedOperation 展示原因（非 2xx 只会退化成"HTTP 400"）
+            sendJson(res, 200, failure(error, 'settings'));
+        }
     });
 
     // 检查更新
@@ -403,5 +520,5 @@ export function apply(ctx) {
         return () => clearTimeout(timer);
     }, 'dsh-updater: periodic check');
 
-    ctx.logger?.info?.(`[dsh-updater] 已就绪（当前 ${installedVersion()}，来源 ${PKG}@${DIST_TAG}）`);
+    ctx.logger?.info?.(`[dsh-updater] 已就绪（当前 ${installedVersion()}，通道 ${enabledChannels().join(' + ')}）`);
 }
